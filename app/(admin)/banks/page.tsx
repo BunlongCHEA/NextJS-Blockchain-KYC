@@ -27,6 +27,9 @@ export default function BanksPage() {
     try {
       const res = await api.get("/api/v1/banks/list");
       const data = res.data?.data || res.data || [];
+
+      // console.log("[BanksPage] API response data:", data);
+
       setBanks(Array.isArray(data) ? data : []);
     } catch {
       setBanks([]);

@@ -36,17 +36,14 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
           );
 
           // ✅ Log raw response shape to confirm what Go returns
-          console.log("[auth] Login response status:", response.status);
-          console.log("[auth] Login response data:", JSON.stringify(response.data));
-
-          console.log("API URL:", process.env.NEXT_PUBLIC_API_URL);
+          // console.log("[auth] Login response status:", response.status);
+          // console.log("[auth] Login response data:", JSON.stringify(response.data));
+          // console.log("API URL:", process.env.NEXT_PUBLIC_API_URL);
 
           const data = response.data;
           const payload = data?.data;
 
           if (payload?.access_token && payload?.user) {
-            console.log("[auth] Login success for:", payload.user.username);
-
             return {
               id: payload.user.id,
               name: payload.user.username,
@@ -68,11 +65,17 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
   ],
   session: { strategy: "jwt" },
   callbacks: {
-    async jwt({ token, user }) {
+    async jwt({ token, user, trigger, session }) {
+      // On initial login
       if (user) {
         token.role = (user as any).role;
         token.accessToken = (user as any).accessToken;
         token.passwordChangeRequired = (user as any).passwordChangeRequired;
+      }
+      
+      // On session.update() call — allows client to clear passwordChangeRequired
+      if (trigger === "update" && session?.passwordChangeRequired !== undefined) {
+        token.passwordChangeRequired = session.passwordChangeRequired;
       }
       return token;
     },
