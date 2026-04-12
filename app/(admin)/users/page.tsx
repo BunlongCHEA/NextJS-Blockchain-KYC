@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Plus, RefreshCw, Search, ShieldCheck, Trash2, Lock, TrendingUp, AlertCircle, MoreHorizontal, X, Loader2 } from "lucide-react";
+import { Plus, RefreshCw, Search, ShieldCheck, Trash2, Lock, TrendingUp, AlertCircle, MoreHorizontal, X, Loader2, Check } from "lucide-react";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -16,7 +16,8 @@ import {
 } from "@/components/ui/dialog";
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem,
-  DropdownMenuSeparator, DropdownMenuTrigger,
+  DropdownMenuSeparator, DropdownMenuSub, DropdownMenuSubContent,
+  DropdownMenuSubTrigger, DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Alert, AlertDescription } from "@/components/ui/alert";
@@ -34,6 +35,13 @@ const ROLE_COLORS: Record<string, string> = {
   auditor:      "bg-green-900 text-green-300",
   customer:     "bg-gray-700 text-gray-300",
 };
+
+const ALL_ROLES: { value: string; label: string }[] = [
+  { value: "bank_officer", label: "Bank Officer" },
+  { value: "bank_admin",   label: "Bank Admin"   },
+  { value: "auditor",      label: "Auditor"       },
+  { value: "admin",        label: "Admin"         },
+];
 
 const INTERNAL_ROLES = ["bank_admin", "bank_officer", "auditor"] as const;
 type InternalRole = typeof INTERNAL_ROLES[number];
@@ -403,12 +411,43 @@ export default function UsersPage() {
                                 className="cursor-pointer hover:bg-gray-700">
                                 <Lock className="mr-2 h-4 w-4" />Reset Password
                               </DropdownMenuItem>
-                              <DropdownMenuItem
+                              
+                              {/* <DropdownMenuItem
                                 disabled={isAdmin}
                                 onClick={() => handlePromoteRole(user)}
                                 className="cursor-pointer hover:bg-gray-700">
                                 <TrendingUp className="mr-2 h-4 w-4" />Promote Role
-                              </DropdownMenuItem>
+                              </DropdownMenuItem> */}
+                              <DropdownMenuSub>
+                                <DropdownMenuSubTrigger
+                                  disabled={isAdmin}
+                                  className="cursor-pointer hover:bg-gray-700 focus:bg-gray-700 data-[state=open]:bg-gray-700">
+                                  <TrendingUp className="mr-2 h-4 w-4" />Assign Role
+                                </DropdownMenuSubTrigger>
+                                <DropdownMenuSubContent className="bg-gray-800 border-gray-700 text-gray-200">
+                                  {ALL_ROLES.map((r) => {
+                                    const isCurrent = user.role === r.value;
+                                    return (
+                                      <DropdownMenuItem
+                                        key={r.value}
+                                        disabled={isCurrent}
+                                        onClick={() => handlePromoteRole(user, r.value)}  // ✅ both args
+                                        className={`cursor-pointer hover:bg-gray-700 focus:bg-gray-700 ${
+                                          isCurrent ? "opacity-50 cursor-not-allowed" : ""
+                                        }`}
+                                      >
+                                        {isCurrent
+                                          ? <Check className="mr-2 h-4 w-4 text-green-400" />
+                                          : <span className="mr-6 inline-block" />
+                                        }
+                                        {r.label}
+                                        {isCurrent && <span className="ml-auto text-xs text-gray-500">current</span>}
+                                      </DropdownMenuItem>
+                                    );
+                                  })}
+                                </DropdownMenuSubContent>
+                              </DropdownMenuSub>
+
                               <DropdownMenuSeparator className="bg-gray-700" />
                               <DropdownMenuItem
                                 disabled={isAdmin}
