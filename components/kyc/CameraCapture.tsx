@@ -124,6 +124,7 @@ export default function CameraCapture({
   const facingModeRef = useRef<"user" | "environment">(
     mode === "selfie" ? "user" : "environment"
   );
+  const mountedRef  = useRef(true);   // tracks whether component is still in the DOM
 
   const [camError, setCamError] = useState<string | null>(null);
   const [preview, setPreview] = useState<string | null>(null);
@@ -134,43 +135,112 @@ export default function CameraCapture({
   });
   const [starting, setStarting] = useState(true);
 
-  // ── Start camera stream ──────────────────────────────────────────────────
+  // ── Stop stream ──────────────────────────────────────────────────────────
+  const stopCamera = useCallback(() => {
+    cancelAnimationFrame(animFrameRef.current);
+    streamRef.current?.getTracks().forEach((t) => t.stop());
+    streamRef.current = null;
+  }, []);
+
+  // ── Start stream ─────────────────────────────────────────────────────────
   const startCamera = useCallback(async () => {
+    // Guard: reset error + preview only if still mounted
+    if (!mountedRef.current) return;
     setStarting(true);
     setCamError(null);
     setPreview(null);
+
+    let stream: MediaStream;
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          facingMode: facingModeRef.current,
-          width: { ideal: 1280 },
-          height: { ideal: 720 },
-        },
+      stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: facingModeRef.current, width: { ideal: 1280 }, height: { ideal: 720 } },
         audio: false,
       });
-      streamRef.current = stream;
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        await videoRef.current.play();
-      }
-      setStarting(false);
     } catch (err: any) {
+      if (!mountedRef.current) return;          // unmounted while waiting for permission
       setStarting(false);
       if (err?.name === "NotAllowedError")
         setCamError("Camera access denied. Please allow camera in your browser settings.");
       else if (err?.name === "NotFoundError")
         setCamError("No camera found on this device.");
       else
-        setCamError("Could not open camera: " + (err?.message ?? "unknown error"));
+        setCamError("Could not access camera: " + (err?.message ?? "unknown error"));
+      return;
     }
+
+    // Bail out if component unmounted while getUserMedia was resolving
+    if (!mountedRef.current) {
+      stream.getTracks().forEach((t) => t.stop());
+      return;
+    }
+
+    streamRef.current = stream;
+
+    const video = videoRef.current;
+    if (!video) {
+      stream.getTracks().forEach((t) => t.stop());
+      return;
+    }
+
+    video.srcObject = stream;
+
+    // ── Play without await — handle AbortError silently ───────────────────
+    // "play() interrupted because media was removed" = AbortError.
+    // This happens when the component unmounts before play() resolves (e.g.
+    // transitioning from ID step → selfie step). We ignore it rather than
+    // showing a spurious error to the user.
+    video.play().then(() => {
+      if (mountedRef.current) setStarting(false);
+    }).catch((err: DOMException) => {
+      if (err?.name === "AbortError") {
+        // Component was unmounted or stream stopped mid-play — safe to ignore
+        return;
+      }
+      if (mountedRef.current) {
+        setStarting(false);
+        setCamError("Could not start camera playback. Please try again.");
+      }
+    });
+
   }, []);
 
-  // ── Stop camera stream ───────────────────────────────────────────────────
-  const stopCamera = useCallback(() => {
-    cancelAnimationFrame(animFrameRef.current);
-    streamRef.current?.getTracks().forEach((t) => t.stop());
-    streamRef.current = null;
-  }, []);
+//   // ── Start camera stream ──────────────────────────────────────────────────
+//   const startCamera = useCallback(async () => {
+//     setStarting(true);
+//     setCamError(null);
+//     setPreview(null);
+//     try {
+//       const stream = await navigator.mediaDevices.getUserMedia({
+//         video: {
+//           facingMode: facingModeRef.current,
+//           width: { ideal: 1280 },
+//           height: { ideal: 720 },
+//         },
+//         audio: false,
+//       });
+//       streamRef.current = stream;
+//       if (videoRef.current) {
+//         videoRef.current.srcObject = stream;
+//         await videoRef.current.play();
+//       }
+//       setStarting(false);
+//     } catch (err: any) {
+//       setStarting(false);
+//       if (err?.name === "NotAllowedError")
+//         setCamError("Camera access denied. Please allow camera in your browser settings.");
+//       else if (err?.name === "NotFoundError")
+//         setCamError("No camera found on this device.");
+//       else
+//         setCamError("Could not open camera: " + (err?.message ?? "unknown error"));
+//     }
+//   }, []);
+
+//   // ── Stop camera stream ───────────────────────────────────────────────────
+//   const stopCamera = useCallback(() => {
+//     cancelAnimationFrame(animFrameRef.current);
+//     streamRef.current?.getTracks().forEach((t) => t.stop());
+//     streamRef.current = null;
+//   }, []);
 
   // ── Flip camera ──────────────────────────────────────────────────────────
   const flipCamera = () => {
@@ -206,8 +276,12 @@ export default function CameraCapture({
 
   // ── Mount / unmount ──────────────────────────────────────────────────────
   useEffect(() => {
+    mountedRef.current = true;    // mark as mounted
     startCamera();
-    return () => stopCamera();
+    return () => {
+      mountedRef.current = false; // mark as unmounted BEFORE stopCamera
+      stopCamera();
+    };
   }, [startCamera, stopCamera]);
 
   // ── Capture snapshot ────────────────────────────────────────────────────

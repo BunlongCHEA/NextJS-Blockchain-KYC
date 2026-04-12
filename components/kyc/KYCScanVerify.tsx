@@ -1,427 +1,412 @@
 "use client";
 
-import { useRef, useEffect, useState, useCallback } from "react";
-import { Camera, RefreshCw, CheckCircle2, AlertTriangle, Loader2, ZoomIn } from "lucide-react";
+/**
+ * KYCScanVerify
+ * ─────────────
+ * After a customer registers, this component walks them through:
+ *   Step 1 – Capture ID document  (camera → CameraCapture)
+ *   Step 2 – Capture selfie        (camera → CameraCapture)
+ *   Step 3 – Submit to Go API:
+ *              • POST /api/v1/kyc/scan-verify/file  (multipart, when captureMode="file")
+ *              • POST /api/v1/kyc/scan-verify        (base64,    when captureMode="base64")
+ *   Step 4 – Show AI result (score, status, OCR fields)
+ *
+ * Props:
+ *   customerId   – the KYC customer ID returned after /api/v1/kyc/register
+ *   documentType – "national_id" | "passport" | "driver_license"
+ *   captureMode  – "file" (default, multipart) | "base64"
+ *   onDone       – called when the flow finishes (success or skip)
+ */
+
+"use client";
+
+import { useState } from "react";
+import axios, { AxiosError } from "axios";
+import {
+  CheckCircle2, AlertTriangle, Loader2, ScanLine,
+  IdCard, User as UserIcon, SkipForward, WifiOff,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
+import CameraCapture, { CaptureResult, CaptureMode } from "./CameraCapture";
 
-export type CaptureMode = "file" | "base64";
-
-export interface CaptureResult {
-  file?: File;
-  base64?: string; // without data-url prefix, pure base64
-  dataUrl: string; // for preview
+interface VerifyResult {
+  customer_id: string;
+  document_verified: boolean;
+  face_matched: boolean;
+  overall_score: number;
+  ai_status: string;
+  kyc_status: string;
+  reason: string;
+  ocr_result: Record<string, unknown>;
+  face_result: Record<string, unknown>;
+  field_match: Record<string, unknown>;
+  score_breakdown: Record<string, unknown>;
+  pending_for_mine: boolean;
+  timestamp: string;
 }
 
-interface CameraGuidance {
-  ok: boolean;
-  message: string;
-  color: "green" | "yellow" | "red";
-}
+type ScanStep = "id" | "selfie" | "submitting" | "result";
 
-interface CameraCaptureProps {
-  /** What the camera is for — shown as overlay label */
-  label: string;
-  /** "id_document" shows a landscape rect guide, "selfie" shows an oval face guide */
-  mode: "id_document" | "selfie";
-  /** Whether to return a File or base64 string (default: file) */
+interface KYCScanVerifyProps {
+  customerId: string;
+  documentType?: "national_id" | "passport" | "driver_license";
   captureMode?: CaptureMode;
-  /** Called when user confirms the capture */
-  onCapture: (result: CaptureResult) => void;
-  /** Called when user wants to cancel / go back */
-  onCancel?: () => void;
+  apiBaseUrl: string;
+  accessToken: string;
+  onDone: (result?: VerifyResult) => void;
 }
 
-// ── Brightness helper (sample canvas pixels) ────────────────────────────────
-function measureBrightness(
-  canvas: HTMLCanvasElement,
-  ctx: CanvasRenderingContext2D
-): number {
-  const { width, height } = canvas;
-  const imageData = ctx.getImageData(
-    Math.floor(width * 0.25),
-    Math.floor(height * 0.25),
-    Math.floor(width * 0.5),
-    Math.floor(height * 0.5)
-  );
-  const data = imageData.data;
-  let sum = 0;
-  for (let i = 0; i < data.length; i += 4) {
-    // perceived luminance
-    sum += 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
-  }
-  return sum / (data.length / 4);
-}
-
-// ── Sharpness helper (Laplacian variance approximation) ─────────────────────
-function measureSharpness(
-  canvas: HTMLCanvasElement,
-  ctx: CanvasRenderingContext2D
-): number {
-  const { width, height } = canvas;
-  const imageData = ctx.getImageData(
-    Math.floor(width * 0.2),
-    Math.floor(height * 0.2),
-    Math.floor(width * 0.6),
-    Math.floor(height * 0.6)
-  );
-  const data = imageData.data;
-  const w = Math.floor(width * 0.6);
-  const h = Math.floor(height * 0.6);
-  let laplacianSum = 0;
-  let count = 0;
-  for (let y = 1; y < h - 1; y++) {
-    for (let x = 1; x < w - 1; x++) {
-      const idx = (y * w + x) * 4;
-      const gray = 0.299 * data[idx] + 0.587 * data[idx + 1] + 0.114 * data[idx + 2];
-      const idxL = (y * w + (x - 1)) * 4;
-      const idxR = (y * w + (x + 1)) * 4;
-      const idxT = ((y - 1) * w + x) * 4;
-      const idxB = ((y + 1) * w + x) * 4;
-      const gL = 0.299 * data[idxL] + 0.587 * data[idxL + 1] + 0.114 * data[idxL + 2];
-      const gR = 0.299 * data[idxR] + 0.587 * data[idxR + 1] + 0.114 * data[idxR + 2];
-      const gT = 0.299 * data[idxT] + 0.587 * data[idxT + 1] + 0.114 * data[idxT + 2];
-      const gB = 0.299 * data[idxB] + 0.587 * data[idxB + 1] + 0.114 * data[idxB + 2];
-      const lap = Math.abs(-gL - gR - gT - gB + 4 * gray);
-      laplacianSum += lap;
-      count++;
-    }
-  }
-  return count > 0 ? laplacianSum / count : 0;
-}
-
-// ── Derive real-time guidance from metrics ───────────────────────────────────
-function deriveGuidance(
-  brightness: number,
-  sharpness: number,
-  mode: "id_document" | "selfie"
-): CameraGuidance {
-  if (brightness < 40)
-    return { ok: false, message: "Too dark — move to brighter light", color: "red" };
-  if (brightness > 220)
-    return { ok: false, message: "Too bright — avoid direct light / glare", color: "red" };
-  if (sharpness < 3)
-    return { ok: false, message: "Blurry — hold steady and focus", color: "yellow" };
-  if (mode === "id_document" && brightness < 80)
-    return { ok: false, message: "Low light — improve lighting for document", color: "yellow" };
-  return {
-    ok: true,
-    message: mode === "selfie" ? "Good — look straight at camera" : "Good — align document in the frame",
-    color: "green",
+function statusBadge(status: string) {
+  const map: Record<string, string> = {
+    VERIFIED:     "bg-green-900 text-green-300",
+    REJECTED:     "bg-red-900 text-red-300",
+    NEEDS_REVIEW: "bg-yellow-900 text-yellow-300",
   };
+  return map[status] ?? "bg-gray-700 text-gray-300";
 }
 
-export default function CameraCapture({
-  label,
-  mode,
+// ── Friendly error message from any axios / network error ────────────────────
+function friendlyError(err: unknown): string {
+  if (axios.isAxiosError(err)) {
+    const axErr = err as AxiosError<{ message?: string; error?: string }>;
+
+    // Network-level: ERR_CONNECTION_RESET, ERR_CONNECTION_REFUSED, ECONNRESET, etc.
+    if (!axErr.response) {
+      return (
+        "Could not reach the server.\n" +
+        "• Make sure the Go server is running on port 8080.\n" +
+        "• Make sure the Python AI service is running (required for scan-verify).\n" +
+        "If the Python service is not ready, you can skip this step and complete verification later."
+      );
+    }
+
+    const status = axErr.response.status;
+    const msg =
+      axErr.response.data?.message ??
+      axErr.response.data?.error ??
+      axErr.message;
+
+    if (status === 403)
+      return "Permission denied (403). Ask your admin to grant kyc:verify to the customer role.";
+    if (status === 401)
+      return "Session expired (401). Please log in again.";
+    if (status === 404)
+      return "KYC record not found (404). The customer ID may be invalid.";
+    if (status >= 500)
+      return `Server error (${status}) — the Go server may be waiting on the Python AI service. ${msg ?? ""}`.trim();
+
+    return msg ?? `Request failed with status ${status}`;
+  }
+  return "An unexpected error occurred. Please try again.";
+}
+
+export default function KYCScanVerify({
+  customerId,
+  documentType = "national_id",
   captureMode = "file",
-  onCapture,
-  onCancel,
-}: CameraCaptureProps) {
-  const videoRef = useRef<HTMLVideoElement>(null);
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const streamRef = useRef<MediaStream | null>(null);
-  const animFrameRef = useRef<number>(0);
-  const facingModeRef = useRef<"user" | "environment">(
-    mode === "selfie" ? "user" : "environment"
-  );
+  apiBaseUrl,
+  accessToken,
+  onDone,
+}: KYCScanVerifyProps) {
+  const [step,          setStep]          = useState<ScanStep>("id");
+  const [idCapture,     setIdCapture]     = useState<CaptureResult | null>(null);
+  const [submitting,    setSubmitting]    = useState(false);
+  const [result,        setResult]        = useState<VerifyResult | null>(null);
+  const [error,         setError]         = useState<string | null>(null);
+  const [retryCount,    setRetryCount]    = useState(0);
 
-  const [camError, setCamError] = useState<string | null>(null);
-  const [preview, setPreview] = useState<string | null>(null);
-  const [guidance, setGuidance] = useState<CameraGuidance>({
-    ok: false,
-    message: "Starting camera…",
-    color: "yellow",
-  });
-  const [starting, setStarting] = useState(true);
-
-  // ── Start camera stream ──────────────────────────────────────────────────
-  const startCamera = useCallback(async () => {
-    setStarting(true);
-    setCamError(null);
-    setPreview(null);
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          facingMode: facingModeRef.current,
-          width: { ideal: 1280 },
-          height: { ideal: 720 },
-        },
-        audio: false,
-      });
-      streamRef.current = stream;
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        await videoRef.current.play();
-      }
-      setStarting(false);
-    } catch (err: any) {
-      setStarting(false);
-      if (err?.name === "NotAllowedError")
-        setCamError("Camera access denied. Please allow camera in your browser settings.");
-      else if (err?.name === "NotFoundError")
-        setCamError("No camera found on this device.");
-      else
-        setCamError("Could not open camera: " + (err?.message ?? "unknown error"));
-    }
-  }, []);
-
-  // ── Stop camera stream ───────────────────────────────────────────────────
-  const stopCamera = useCallback(() => {
-    cancelAnimationFrame(animFrameRef.current);
-    streamRef.current?.getTracks().forEach((t) => t.stop());
-    streamRef.current = null;
-  }, []);
-
-  // ── Flip camera ──────────────────────────────────────────────────────────
-  const flipCamera = () => {
-    facingModeRef.current = facingModeRef.current === "user" ? "environment" : "user";
-    stopCamera();
-    startCamera();
+  // ── Step 1: ID captured ──────────────────────────────────────────────────
+  const handleIdCapture = (res: CaptureResult) => {
+    setIdCapture(res);
+    setStep("selfie");
   };
 
-  // ── Real-time guidance loop ──────────────────────────────────────────────
-  useEffect(() => {
-    if (starting || camError || preview) return;
-    const canvas = canvasRef.current;
-    const video = videoRef.current;
-    if (!canvas || !video) return;
+  // ── Step 2: Selfie captured → submit ─────────────────────────────────────
+  const handleSelfieCapture = async (res: CaptureResult) => {
+    setStep("submitting");
+    await submit(res);
+  };
 
-    const tick = () => {
-      if (video.readyState >= 2) {
-        canvas.width = video.videoWidth || 640;
-        canvas.height = video.videoHeight || 360;
-        const ctx = canvas.getContext("2d");
-        if (ctx) {
-          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-          const brightness = measureBrightness(canvas, ctx);
-          const sharpness = measureSharpness(canvas, ctx);
-          setGuidance(deriveGuidance(brightness, sharpness, mode));
-        }
-      }
-      animFrameRef.current = requestAnimationFrame(tick);
+  // ── Submit to Go API ──────────────────────────────────────────────────────
+  const submit = async (selfieRes: CaptureResult) => {
+    if (!idCapture) return;
+    setSubmitting(true);
+    setError(null);
+
+    const headers: Record<string, string> = {
+      Authorization: `Bearer ${accessToken}`,
     };
-    animFrameRef.current = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(animFrameRef.current);
-  }, [starting, camError, preview, mode]);
 
-  // ── Mount / unmount ──────────────────────────────────────────────────────
-  useEffect(() => {
-    startCamera();
-    return () => stopCamera();
-  }, [startCamera, stopCamera]);
+    try {
+      let data: VerifyResult;
 
-  // ── Capture snapshot ────────────────────────────────────────────────────
-  const captureSnapshot = () => {
-    const video = videoRef.current;
-    const canvas = canvasRef.current;
-    if (!video || !canvas) return;
+      if (captureMode === "file") {
+        const form = new FormData();
+        form.append("customer_id",   customerId);
+        form.append("document_type", documentType);
+        if (idCapture.file)   form.append("id_image",    idCapture.file,  "id_document.jpg");
+        if (selfieRes.file)   form.append("selfie_image", selfieRes.file, "selfie.jpg");
 
-    canvas.width = video.videoWidth || 1280;
-    canvas.height = video.videoHeight || 720;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
+        const resp = await axios.post(
+          `${apiBaseUrl}/api/v1/kyc/scan-verify/file`,
+          form,
+          {
+            headers,
+            // ── Give the Python AI pipeline plenty of time ─────────────────
+            // The Python OCR + face comparison can take 30-120 s on CPU.
+            // Without a long timeout axios will abort and the browser reports
+            // ERR_CONNECTION_RESET even though the server is still processing.
+            timeout: 600_000, // 3 minutes
+          }
+        );
+        data = resp.data?.data as VerifyResult;
+      } else {
+        const resp = await axios.post(
+          `${apiBaseUrl}/api/v1/kyc/scan-verify`,
+          {
+            customer_id:        customerId,
+            document_type:      documentType,
+            id_image_base64:    idCapture.base64,
+            selfie_image_base64: selfieRes.base64,
+          },
+          {
+            headers: { ...headers, "Content-Type": "application/json" },
+            timeout: 600_000,
+          }
+        );
+        data = resp.data?.data as VerifyResult;
+      }
 
-    // Mirror horizontally for selfie mode
-    if (facingModeRef.current === "user") {
-      ctx.translate(canvas.width, 0);
-      ctx.scale(-1, 1);
-    }
-    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-
-    const dataUrl = canvas.toDataURL("image/jpeg", 0.92);
-    setPreview(dataUrl);
-    stopCamera();
-  };
-
-  // ── Retake ───────────────────────────────────────────────────────────────
-  const retake = () => {
-    setPreview(null);
-    startCamera();
-  };
-
-  // ── Confirm capture ──────────────────────────────────────────────────────
-  const confirmCapture = () => {
-    if (!preview) return;
-    const base64 = preview.replace(/^data:image\/\w+;base64,/, "");
-
-    if (captureMode === "base64") {
-      onCapture({ base64, dataUrl: preview });
-    } else {
-      // Convert to File
-      const byteStr = atob(base64);
-      const arr = new Uint8Array(byteStr.length);
-      for (let i = 0; i < byteStr.length; i++) arr[i] = byteStr.charCodeAt(i);
-      const blob = new Blob([arr], { type: "image/jpeg" });
-      const fileName =
-        mode === "selfie" ? "selfie.jpg" : "id_document.jpg";
-      const file = new File([blob], fileName, { type: "image/jpeg" });
-      onCapture({ file, base64, dataUrl: preview });
+      setResult(data);
+      setStep("result");
+    } catch (err) {
+      setError(friendlyError(err));
+      setStep("selfie"); // go back to selfie step so user can retry
+      setRetryCount((c) => c + 1);
+    } finally {
+      setSubmitting(false);
     }
   };
 
-  // ── Guidance badge style ─────────────────────────────────────────────────
-  const guidanceBg = {
-    green: "bg-green-900/80 text-green-300 border-green-700",
-    yellow: "bg-yellow-900/80 text-yellow-300 border-yellow-700",
-    red: "bg-red-900/80 text-red-300 border-red-700",
-  }[guidance.color];
+  const retrySelfie = () => {
+    setError(null);
+    setStep("selfie");
+  };
+
+  const retryFromId = () => {
+    setError(null);
+    setIdCapture(null);
+    setStep("id");
+  };
+
+  // ── Progress bar ─────────────────────────────────────────────────────────
+  const steps: { key: ScanStep; label: string }[] = [
+    { key: "id",         label: "ID Scan"    },
+    { key: "selfie",     label: "Selfie"     },
+    { key: "submitting", label: "Processing" },
+    { key: "result",     label: "Result"     },
+  ];
+  const currentIdx = steps.findIndex((s) => s.key === step);
 
   return (
-    <div className="flex flex-col items-center gap-4 w-full">
-      {/* Label */}
-      <p className="text-sm font-semibold text-gray-300 uppercase tracking-wider">{label}</p>
+    <div className="w-full max-w-lg mx-auto space-y-4">
+      {/* Progress */}
+      <div className="flex items-center gap-2 justify-center text-xs text-gray-400">
+        {steps.map((s, i) => (
+          <div key={s.key} className="flex items-center gap-1">
+            {i > 0 && <span className="text-gray-600">→</span>}
+            <span className={`px-2 py-0.5 rounded-full ${
+              step === s.key      ? "bg-blue-700 text-white"
+              : currentIdx > i    ? "bg-green-900 text-green-300"
+              :                     "bg-gray-800 text-gray-500"
+            }`}>
+              {s.label}
+            </span>
+          </div>
+        ))}
+      </div>
 
-      {/* Camera error */}
-      {camError && (
-        <div className="w-full rounded-lg bg-red-950 border border-red-800 p-4 text-red-300 text-sm flex items-center gap-2">
-          <AlertTriangle className="h-4 w-4 shrink-0" />
-          {camError}
-        </div>
+      {/* Error banner */}
+      {error && (
+        <Alert className="bg-red-950 border-red-800">
+          <WifiOff className="h-4 w-4 text-red-400 shrink-0" />
+          <AlertDescription className="text-red-300 text-xs whitespace-pre-line">
+            {error}
+          </AlertDescription>
+        </Alert>
       )}
 
-      {/* Starting spinner */}
-      {starting && !camError && (
-        <div className="w-full aspect-video bg-gray-800 rounded-xl flex items-center justify-center">
-          <Loader2 className="h-8 w-8 text-gray-400 animate-spin" />
-        </div>
-      )}
-
-      {/* Live camera view OR preview */}
-      {!camError && (
-        <div className="relative w-full aspect-video bg-black rounded-xl overflow-hidden">
-          {/* Video */}
-          {!preview && (
-            <video
-              ref={videoRef}
-              autoPlay
-              playsInline
-              muted
-              className={`w-full h-full object-cover ${
-                facingModeRef.current === "user" ? "scale-x-[-1]" : ""
-              }`}
+      {/* ── Step: ID document ── */}
+      {step === "id" && (
+        <Card className="bg-gray-900 border-gray-800">
+          <CardHeader className="pb-2">
+            <CardTitle className="text-white text-base flex items-center gap-2">
+              <IdCard className="h-5 w-5 text-blue-400" />
+              Step 1 — Scan your ID Document
+            </CardTitle>
+            <p className="text-gray-400 text-xs">
+              Hold your {documentType.replace(/_/g, " ")} flat — all corners visible, text readable.
+            </p>
+          </CardHeader>
+          <CardContent>
+            <CameraCapture
+              label="ID / Passport"
+              mode="id_document"
+              captureMode={captureMode}
+              onCapture={handleIdCapture}
+              onCancel={() => onDone()}
             />
-          )}
+          </CardContent>
+        </Card>
+      )}
 
-          {/* Preview image after capture */}
-          {preview && (
-            <img src={preview} alt="Captured" className="w-full h-full object-cover" />
-          )}
+      {/* ── Step: Selfie ── */}
+      {step === "selfie" && (
+        <Card className="bg-gray-900 border-gray-800">
+          <CardHeader className="pb-2">
+            <CardTitle className="text-white text-base flex items-center gap-2">
+              <UserIcon className="h-5 w-5 text-blue-400" />
+              Step 2 — Take a Selfie
+            </CardTitle>
+            <p className="text-gray-400 text-xs">
+              Look straight at the camera. Face well-lit and centred in the oval.
+            </p>
+          </CardHeader>
+          <CardContent>
+            {idCapture && (
+              <div className="mb-3 flex items-center gap-2 text-green-400 text-xs">
+                <CheckCircle2 className="h-4 w-4" />
+                ID document captured successfully
+              </div>
+            )}
+            {/* Show retry-from-ID button after failures */}
+            {retryCount > 0 && (
+              <button
+                onClick={retryFromId}
+                className="mb-3 text-xs text-gray-500 hover:text-gray-300 underline"
+              >
+                ← Re-capture ID document instead
+              </button>
+            )}
+            <CameraCapture
+              label="Selfie"
+              mode="selfie"
+              captureMode={captureMode}
+              onCapture={handleSelfieCapture}
+              onCancel={() => setStep("id")}
+            />
+          </CardContent>
+        </Card>
+      )}
 
-          {/* Overlay guide frame */}
-          {!preview && !starting && (
-            <>
-              {mode === "id_document" ? (
-                // Landscape card frame
-                <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                  <div
-                    className="border-2 border-blue-400 rounded-lg"
-                    style={{ width: "72%", height: "58%", boxShadow: "0 0 0 9999px rgba(0,0,0,0.45)" }}
-                  />
-                  {/* Corner accents */}
-                  {["top-[21%] left-[14%]", "top-[21%] right-[14%]", "bottom-[21%] left-[14%]", "bottom-[21%] right-[14%]"].map(
-                    (pos, i) => (
-                      <div
-                        key={i}
-                        className={`absolute ${pos} w-5 h-5 border-blue-300 ${
-                          i < 2 ? "border-t-2" : "border-b-2"
-                        } ${i % 2 === 0 ? "border-l-2" : "border-r-2"}`}
-                      />
-                    )
+      {/* ── Step: Processing ── */}
+      {step === "submitting" && (
+        <Card className="bg-gray-900 border-gray-800">
+          <CardContent className="pt-10 pb-10 flex flex-col items-center gap-4 text-center">
+            <ScanLine className="h-12 w-12 text-blue-400 animate-pulse" />
+            <div>
+              <p className="text-white font-semibold">Running AI Verification…</p>
+              <p className="text-gray-400 text-sm mt-1">
+                OCR scan → face match → blockchain record update
+              </p>
+              <p className="text-gray-500 text-xs mt-2">
+                This can take up to 10 minutes — please keep this page open.
+              </p>
+            </div>
+            <Loader2 className="h-6 w-6 text-gray-400 animate-spin" />
+          </CardContent>
+        </Card>
+      )}
+
+      {/* ── Step: Result ── */}
+      {step === "result" && result && (
+        <Card className="bg-gray-900 border-gray-800">
+          <CardHeader className="pb-2">
+            <CardTitle className="text-white text-base flex items-center gap-2">
+              <CheckCircle2 className="h-5 w-5 text-green-400" />
+              Verification Complete
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="flex flex-wrap gap-3 items-center">
+              <span className={`text-xs px-3 py-1 rounded-full font-semibold ${statusBadge(result.ai_status)}`}>
+                {result.ai_status}
+              </span>
+              <span className="text-gray-400 text-xs">
+                Score: {(result.overall_score * 100).toFixed(1)}%
+              </span>
+              {result.document_verified && <Badge className="bg-blue-900 text-blue-300 text-xs">Document ✓</Badge>}
+              {result.face_matched       && <Badge className="bg-purple-900 text-purple-300 text-xs">Face ✓</Badge>}
+            </div>
+
+            {result.reason && (
+              <p className="text-gray-400 text-sm border-l-2 border-gray-700 pl-3">{result.reason}</p>
+            )}
+
+            {result.ocr_result && Object.keys(result.ocr_result).length > 0 && (
+              <div>
+                <p className="text-gray-500 text-xs uppercase tracking-wider mb-2">OCR Extracted</p>
+                <div className="grid grid-cols-2 gap-1">
+                  {Object.entries(result.ocr_result).map(([k, v]) =>
+                    v ? (
+                      <div key={k} className="text-xs">
+                        <span className="text-gray-500">{k.replace(/_/g, " ")}: </span>
+                        <span className="text-gray-300">{String(v)}</span>
+                      </div>
+                    ) : null
                   )}
                 </div>
-              ) : (
-                // Oval face guide
-                <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                  <div
-                    className="border-2 border-blue-400 rounded-full"
-                    style={{
-                      width: "42%",
-                      paddingBottom: "56%",
-                      boxShadow: "0 0 0 9999px rgba(0,0,0,0.45)",
-                      position: "absolute",
-                    }}
-                  />
-                </div>
-              )}
-
-              {/* Guidance badge */}
-              <div
-                className={`absolute bottom-3 left-1/2 -translate-x-1/2 px-3 py-1.5 rounded-full border text-xs font-medium flex items-center gap-1.5 ${guidanceBg}`}
-              >
-                {guidance.color === "green" ? (
-                  <CheckCircle2 className="h-3.5 w-3.5" />
-                ) : (
-                  <AlertTriangle className="h-3.5 w-3.5" />
-                )}
-                {guidance.message}
               </div>
-            </>
-          )}
+            )}
 
-          {/* Flip button */}
-          {!preview && !starting && (
-            <button
-              onClick={flipCamera}
-              className="absolute top-3 right-3 bg-black/50 hover:bg-black/70 rounded-full p-2 text-white"
-              title="Flip camera"
-            >
-              <RefreshCw className="h-4 w-4" />
-            </button>
-          )}
+            {result.field_match && Object.keys(result.field_match).length > 0 && (
+              <div>
+                <p className="text-gray-500 text-xs uppercase tracking-wider mb-2">Field Match</p>
+                <div className="flex flex-wrap gap-2">
+                  {Object.entries(result.field_match).map(([k, v]) => (
+                    <span key={k} className={`text-xs px-2 py-0.5 rounded-full ${v ? "bg-green-900 text-green-300" : "bg-red-900 text-red-300"}`}>
+                      {k.replace(/_/g, " ")} {v ? "✓" : "✗"}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
 
-          {/* Zoom hint */}
-          {!preview && !starting && mode === "id_document" && (
-            <div className="absolute top-3 left-3 bg-black/50 rounded-full px-2 py-1 text-gray-300 text-xs flex items-center gap-1">
-              <ZoomIn className="h-3 w-3" /> Fill the frame
+            {result.ai_status === "NEEDS_REVIEW" && (
+              <Alert className="bg-yellow-950 border-yellow-800">
+                <AlertDescription className="text-yellow-300 text-xs">
+                  Documents submitted for manual review. A bank officer will verify them shortly.
+                </AlertDescription>
+              </Alert>
+            )}
+
+            <div className="flex gap-3 pt-2">
+              <Button onClick={() => onDone(result)} className="flex-1 bg-blue-600 hover:bg-blue-700">
+                Continue to Login
+              </Button>
+              {result.ai_status !== "VERIFIED" && (
+                <Button variant="outline" onClick={retrySelfie} className="border-gray-700 text-gray-300">
+                  Retry
+                </Button>
+              )}
             </div>
-          )}
-        </div>
+          </CardContent>
+        </Card>
       )}
 
-      {/* Hidden canvas for pixel analysis & capture */}
-      <canvas ref={canvasRef} className="hidden" />
-
-      {/* Action buttons */}
-      <div className="flex gap-3 w-full">
-        {!preview ? (
-          <>
-            <Button
-              type="button"
-              onClick={captureSnapshot}
-              disabled={starting || !!camError || !guidance.ok}
-              className="flex-1 bg-blue-600 hover:bg-blue-700 disabled:opacity-50"
-            >
-              <Camera className="mr-2 h-4 w-4" />
-              {guidance.ok ? "Capture" : "Waiting for good angle…"}
-            </Button>
-            {onCancel && (
-              <Button type="button" variant="outline" onClick={onCancel} className="border-gray-700 text-gray-300">
-                Cancel
-              </Button>
-            )}
-          </>
-        ) : (
-          <>
-            <Button
-              type="button"
-              onClick={confirmCapture}
-              className="flex-1 bg-green-700 hover:bg-green-600"
-            >
-              <CheckCircle2 className="mr-2 h-4 w-4" />
-              Use This Photo
-            </Button>
-            <Button
-              type="button"
-              variant="outline"
-              onClick={retake}
-              className="border-gray-700 text-gray-300"
-            >
-              <RefreshCw className="mr-2 h-4 w-4" />
-              Retake
-            </Button>
-          </>
-        )}
-      </div>
+      {/* Skip option */}
+      {(step === "id" || step === "selfie") && (
+        <button
+          onClick={() => onDone()}
+          className="w-full text-center text-xs text-gray-600 hover:text-gray-400 flex items-center justify-center gap-1 py-1"
+        >
+          <SkipForward className="h-3 w-3" />
+          Skip for now — complete verification later
+        </button>
+      )}
     </div>
   );
 }

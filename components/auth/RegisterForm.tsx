@@ -9,79 +9,108 @@ import { Loader2, UserPlus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import {
+  Card, CardContent, CardDescription, CardHeader, CardTitle,
+} from "@/components/ui/card";
+import {
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+} from "@/components/ui/select";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { kycRegistrationSchema, KYCRegistrationFormData } from "@/lib/validations/kyc";
 import { Bank } from "@/types/bank";
 import axios from "axios";
 import KYCScanVerify from "@/components/kyc/KYCScanVerify";
 
-// After /api/v1/kyc/register the backend returns the new customer_id
-interface RegisterResponse {
-  customer_id: string;
-  access_token?: string; // some setups issue a short-lived token for the scan step
-  message?: string;
+// Tracks what we have after both registration calls succeed
+interface RegisteredSession {
+  customerId: string;   // from POST /api/v1/kyc  → data.customer_id
+  accessToken: string;  // from POST /api/v1/auth/login → data.access_token
+  username: string;
+  password: string;     // kept briefly so we can auto-login
 }
 
 export default function RegisterForm() {
   const router = useRouter();
   const [banks, setBanks] = useState<Bank[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [success, setSuccess] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
-
-  // After registration we keep track of the new user for the scan step
-  const [registered, setRegistered] = useState<RegisterResponse | null>(null);
-  // Once scanning is done (or skipped) we show the final success card
+  const [session, setSession] = useState<RegisteredSession | null>(null);
   const [scanComplete, setScanComplete] = useState(false);
 
   const {
     register,
     handleSubmit,
     setValue,
+    watch,
     formState: { errors },
   } = useForm<KYCRegistrationFormData>({
     resolver: zodResolver(kycRegistrationSchema),
   });
 
+  const idTypeValue = watch("id_type");
+
   useEffect(() => {
     const fetchBanks = async () => {
       try {
-        const response = await axios.get(
+        const res = await axios.get(
           `${process.env.NEXT_PUBLIC_API_URL}/api/v1/banks/list`
         );
-        setBanks(response.data?.data || response.data || []);
+        setBanks(res.data?.data || res.data || []);
       } catch {
-        // Banks list unavailable
+        // continue without bank list
       }
     };
     fetchBanks();
   }, []);
 
-  // Step 1: Submit registration form
+  // ─── Submit: 2-step registration ─────────────────────────────────────────
   const onSubmit = async (data: KYCRegistrationFormData) => {
     setIsLoading(true);
     setError(null);
 
-    try {
-      // await axios.post(
-      //   `${process.env.NEXT_PUBLIC_API_URL}/api/v1/kyc/register`,
-      //   data
-      // );
-      // setSuccess(true);
+    const base = process.env.NEXT_PUBLIC_API_URL;
 
-      const resp = await axios.post<{ data: RegisterResponse }>(
-        `${process.env.NEXT_PUBLIC_API_URL}/api/v1/kyc/register`,
-        data
-      );
-      const payload = resp.data?.data;
-      setRegistered({
-        customer_id: payload?.customer_id ?? "",
-        access_token: payload?.access_token,
-        message: payload?.message,
+    try {
+      // ── Step A: create auth user  POST /api/v1/auth/register ──────────────
+      await axios.post(`${base}/api/v1/auth/register`, {
+        username: data.username,
+        email:    data.email,
+        password: data.password,
+        role:     "customer",
+        bank_id:  data.bank_id,
       });
 
+      // ── Step B: login to get token  POST /api/v1/auth/login ───────────────
+      const loginRes = await axios.post(`${base}/api/v1/auth/login`, {
+        username: data.username,
+        password: data.password,
+      });
+      const accessToken: string =
+        loginRes.data?.data?.access_token ?? loginRes.data?.access_token ?? "";
+
+      // ── Step C: create KYC profile  POST /api/v1/kyc ──────────────────────
+      const kycRes = await axios.post(
+        `${base}/api/v1/kyc`,
+        {
+          first_name:    data.first_name,
+          last_name:     data.last_name,
+          date_of_birth: data.date_of_birth,
+          nationality:   data.nationality,
+          id_type:       data.id_type,
+          id_number:     data.id_number,
+          id_expiry_date: data.id_expiry_date,
+          address:       data.address,
+          email:         data.email,
+          phone:         data.phone,
+          bank_id:       data.bank_id,
+        },
+        { headers: { Authorization: `Bearer ${accessToken}` } }
+      );
+
+      const customerId: string =
+        kycRes.data?.data?.customer_id ?? kycRes.data?.customer_id ?? "";
+
+      setSession({ customerId, accessToken, username: data.username, password: data.password });
     } catch (err: any) {
       setError(
         err.response?.data?.error ||
@@ -93,12 +122,10 @@ export default function RegisterForm() {
     }
   };
 
-  // Step 3: Scan done / skipped
-  const handleScanDone = () => {
-    setScanComplete(true);
-  };
+  // ─── Scan done / skipped ─────────────────────────────────────────────────
+  const handleScanDone = () => setScanComplete(true);
 
-  // Step 3 final success
+  // ─── Final success screen ─────────────────────────────────────────────────
   if (scanComplete) {
     return (
       <Card className="w-full max-w-md mx-auto shadow-lg">
@@ -118,8 +145,8 @@ export default function RegisterForm() {
     );
   }
 
-  // Step 2: KYC scan verify (after form submit)
-  if (registered?.customer_id) {
+  // ─── Camera scan step (auto-shown after form submit) ─────────────────────
+  if (session?.customerId) {
     return (
       <div className="w-full max-w-lg space-y-4">
         <div className="text-center">
@@ -129,18 +156,21 @@ export default function RegisterForm() {
           </p>
         </div>
         <KYCScanVerify
-          customerId={registered.customer_id}
-          documentType="national_id"
-          captureMode="file"  // uses POST /api/v1/kyc/scan-verify/file (multipart)
+          customerId={session.customerId}
+          documentType={
+            (idTypeValue === "passport" ? "passport" : "national_id") as
+              "national_id" | "passport" | "driver_license"
+          }
+          captureMode="file"
           apiBaseUrl={process.env.NEXT_PUBLIC_API_URL ?? ""}
-          accessToken={registered.access_token ?? ""}
+          accessToken={session.accessToken}
           onDone={handleScanDone}
         />
       </div>
     );
   }
 
-  // ── Step 1: Registration form ────────────────────────────────────────────
+  // ─── Registration form ────────────────────────────────────────────────────
   return (
     <Card className="w-full shadow-lg border-0">
       <CardHeader>
@@ -222,7 +252,7 @@ export default function RegisterForm() {
             </div>
           </div>
 
-          {/* Contact Information */}
+          {/* Contact */}
           <div>
             <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wider mb-3">
               Contact Information
@@ -275,7 +305,7 @@ export default function RegisterForm() {
             </div>
           </div>
 
-          {/* Bank Selection */}
+          {/* Bank */}
           <div className="space-y-1">
             <Label htmlFor="bank_id">Bank</Label>
             <Select onValueChange={(v) => setValue("bank_id", v)}>
@@ -296,7 +326,7 @@ export default function RegisterForm() {
             {errors.bank_id && <p className="text-red-500 text-xs">{errors.bank_id.message}</p>}
           </div>
 
-          {/* Account Credentials */}
+          {/* Credentials */}
           <div>
             <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wider mb-3">
               Account Credentials
