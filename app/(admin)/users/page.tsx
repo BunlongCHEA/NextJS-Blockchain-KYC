@@ -264,20 +264,32 @@ export default function UsersPage() {
     }
   };
 
-  const handlePromoteRole = async (user: User) => {
-    const order = ["bank_officer", "bank_admin", "auditor", "admin"];
-    const idx = order.indexOf(user.role);
-    const next = order[Math.min(idx + 1, order.length - 1)];
-    if (next === user.role) { toast({ title: "Already at highest role" }); return; }
-    if (!confirm(`Promote "${user.username}" from ${user.role} → ${next}?`)) return;
-    try {
-      await api.patch("/api/v1/users", { user_id: user.id, role: next });
-      toast({ title: `Promoted to ${next}` });
-      fetchUsers();
-    } catch (err: any) {
-      toast({ title: err?.response?.data?.message ?? "Failed", variant: "destructive" });
-    }
-  };
+  const handlePromoteRole = async (user: User, newRole: string) => {
+  if (newRole === user.role) { toast({ title: "Already on that role" }); return; }
+  if (!confirm(`Change "${user.username}" role from ${user.role} → ${newRole}?`)) return;
+  try {
+    await api.patch("/api/v1/users", { user_id: user.id, role: newRole });
+    toast({ title: `Role changed to ${newRole.replace(/_/g, " ")}` });
+    fetchUsers();
+  } catch (err: any) {
+    toast({ title: err?.response?.data?.message ?? "Failed", variant: "destructive" });
+  }
+};
+
+  // const handlePromoteRole = async (user: User) => {
+  //   const order = ["bank_officer", "bank_admin", "auditor", "admin"];
+  //   const idx = order.indexOf(user.role);
+  //   const next = order[Math.min(idx + 1, order.length - 1)];
+  //   if (next === user.role) { toast({ title: "Already at highest role" }); return; }
+  //   if (!confirm(`Promote "${user.username}" from ${user.role} → ${next}?`)) return;
+  //   try {
+  //     await api.patch("/api/v1/users", { user_id: user.id, role: next });
+  //     toast({ title: `Promoted to ${next}` });
+  //     fetchUsers();
+  //   } catch (err: any) {
+  //     toast({ title: err?.response?.data?.message ?? "Failed", variant: "destructive" });
+  //   }
+  // };
 
   return (
     <div className="space-y-6">
