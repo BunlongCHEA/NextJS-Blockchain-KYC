@@ -159,7 +159,7 @@ export default function KYCScanVerify({
             // The Python OCR + face comparison can take 30-120 s on CPU.
             // Without a long timeout axios will abort and the browser reports
             // ERR_CONNECTION_RESET even though the server is still processing.
-            timeout: 600_000, // 3 minutes
+            timeout: 600_000, // 10 minutes
           }
         );
         data = resp.data?.data as VerifyResult;

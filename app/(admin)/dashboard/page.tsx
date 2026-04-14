@@ -66,6 +66,10 @@ export default function DashboardPage() {
         const banksData = banksRes.data?.data || banksRes.data || [];
         const bcData = blockchainRes.data?.data || blockchainRes.data || {};
 
+        console.log("Fetched KYC Stats:", kycData);
+        console.log("Fetched Banks Data:", banksData);
+        console.log("Fetched Blockchain Stats:", bcData);
+
         setStats({
           total_customers: kycData.total || 0,
           pending_kyc: kycData.pending || 0,
