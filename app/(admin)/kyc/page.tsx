@@ -4,7 +4,7 @@ import { useEffect, useState, useCallback } from "react";
 import {
   Search, Filter, Eye, CheckCircle, XCircle, RefreshCw,
   X, User, Mail, Phone, MapPin, Shield, Calendar, Hash,
-  EyeOff, EyeIcon, Lock, Unlock, Loader2, AlertTriangle,
+  Lock, Unlock, Loader2, AlertTriangle,
 } from "lucide-react";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -22,86 +22,33 @@ import api from "@/lib/api";
 import { format } from "date-fns";
 import { useToast } from "@/components/ui/use-toast";
 
-// ─── Encrypted field mask ─────────────────────────────────────────────────────
+// ─── Encrypted field helpers ──────────────────────────────────────────────────
 
-const ENCRYPTED_MARKER = "[ENCRYPTED]";
-
-/** Returns true when a value is the server-side encrypted placeholder */
-const isEncrypted = (val?: string) =>
-  !val || val === ENCRYPTED_MARKER || val.trim() === "";
-
-/** Mask any readable value as ●●●●●●●● */
-const mask = (val?: string) => {
-  if (!val || isEncrypted(val)) return "●●●●●●●●";
-  return "●".repeat(Math.min(val.length, 10));
-};
-
-// ─── Encrypted Field Display ──────────────────────────────────────────────────
-
-function EncryptedField({
-  value,
-  revealed,
-  isEncryptedOnServer,
-}: {
-  value?: string;
-  revealed: boolean;
-  isEncryptedOnServer: boolean;
-}) {
-  if (isEncryptedOnServer) {
-    return (
-      <span className="inline-flex items-center gap-1 text-amber-500/70 text-xs">
-        <Lock className="h-3 w-3" />
-        <span className="font-mono">Encrypted on server</span>
-      </span>
-    );
-  }
-
-  if (!revealed) {
-    return (
-      <span className="font-mono text-gray-500 tracking-widest text-sm select-none">
-        {mask(value)}
-      </span>
-    );
-  }
-
-  return <span className="text-white text-sm break-all">{value || "—"}</span>;
-}
-
-// ─── Reveal toggle button ─────────────────────────────────────────────────────
-
-function RevealToggle({
-  revealed,
-  onToggle,
-  disabled,
-}: {
-  revealed: boolean;
-  onToggle: () => void;
-  disabled?: boolean;
-}) {
-  return (
-    <button
-      onClick={onToggle}
-      disabled={disabled}
-      title={revealed ? "Hide" : "Reveal"}
-      className={`p-1 rounded transition-colors ${
-        disabled
-          ? "opacity-30 cursor-not-allowed text-gray-600"
-          : revealed
-          ? "text-amber-400 hover:text-amber-300 hover:bg-amber-900/20"
-          : "text-gray-500 hover:text-gray-300 hover:bg-gray-800"
-      }`}
-    >
-      {revealed ? <EyeOff className="h-3.5 w-3.5" /> : <EyeIcon className="h-3.5 w-3.5" />}
-    </button>
-  );
-}
+/** Bullet mask — used in the drawer while fields are hidden */
+const mask = (val?: string) =>
+  "●".repeat(Math.min((val ?? "").length || 8, 10));
 
 // ─── Detail Drawer ────────────────────────────────────────────────────────────
+//
+// HOW DECRYPTION WORKS
+// ────────────────────
+// ListKYC  → GET /api/v1/kyc/list  → returns records WITHOUT decryption
+//            (ReadKYC is never called, so email/phone/id_number = "[ENCRYPTED]")
+//
+// GetKYC   → GET /api/v1/kyc?customer_id=X  → calls ReadKYC(id, decrypt=true)
+//            which runs DecryptSensitiveData → returns plain-text values
+//
+// Strategy: keep the list fast (no per-row decrypt). On "Reveal", fetch the
+// single decrypted record via GET /api/v1/kyc?customer_id=X, store it in
+// `decryptedRecord`, and render sensitive fields from there.
+// Clicking "Hide" discards `decryptedRecord` and goes back to masked display.
 
-interface RevealState {
-  email: boolean;
-  phone: boolean;
-  id_number: boolean;
+interface KYCDetailDrawerProps {
+  record: KYCData | null;
+  onClose: () => void;
+  onVerify: (id: string) => void;
+  onReject: (id: string) => void;
+  actionLoading: string | null;
 }
 
 function KYCDetailDrawer({
@@ -110,32 +57,60 @@ function KYCDetailDrawer({
   onVerify,
   onReject,
   actionLoading,
-}: {
-  record: KYCData | null;
-  onClose: () => void;
-  onVerify: (id: string) => void;
-  onReject: (id: string) => void;
-  actionLoading: string | null;
-}) {
-  const [revealed, setRevealed] = useState<RevealState>({
-    email: false,
-    phone: false,
-    id_number: false,
-  });
+}: KYCDetailDrawerProps) {
+  // decryptedRecord holds the result of GET /api/v1/kyc?customer_id=X
+  const [decryptedRecord, setDecryptedRecord] = useState<KYCData | null>(null);
+  const [decrypting,      setDecrypting]      = useState(false);
+  const [decryptError,    setDecryptError]    = useState<string | null>(null);
+  // revealed = user explicitly asked to show sensitive fields
+  const [revealed,        setRevealed]        = useState(false);
 
-  // Reset reveal state when a different record opens
+  // Reset everything when a different record is opened
   useEffect(() => {
-    setRevealed({ email: false, phone: false, id_number: false });
+    setDecryptedRecord(null);
+    setDecrypting(false);
+    setDecryptError(null);
+    setRevealed(false);
   }, [record?.customer_id]);
 
   if (!record) return null;
 
-  const toggle = (field: keyof RevealState) =>
-    setRevealed((prev) => ({ ...prev, [field]: !prev[field] }));
+  // ── Fetch decrypted record from GET /api/v1/kyc?customer_id=X ─────────────
+  const fetchDecrypted = async () => {
+    if (decryptedRecord) {
+      // Already fetched — just toggle visibility
+      setRevealed(true);
+      return;
+    }
+    setDecrypting(true);
+    setDecryptError(null);
+    try {
+      // This endpoint calls ReadKYC(id, decrypt=true) server-side
+      const res = await api.get("/api/v1/kyc", {
+        params: { customer_id: record.customer_id },
+      });
+      // Response shape: { data: { kyc_data: {...}, on_blockchain: bool, ... } }
+      const kycData: KYCData =
+        res.data?.data?.kyc_data ?? res.data?.data ?? res.data;
+      setDecryptedRecord(kycData);
+      setRevealed(true);
+    } catch (err: any) {
+      setDecryptError(
+        err?.response?.data?.error ?? "Failed to decrypt — check your permissions"
+      );
+    } finally {
+      setDecrypting(false);
+    }
+  };
 
-  const revealAll = () => setRevealed({ email: true, phone: true, id_number: true });
-  const hideAll   = () => setRevealed({ email: false, phone: false, id_number: false });
-  const anyRevealed = revealed.email || revealed.phone || revealed.id_number;
+  const hideFields = () => setRevealed(false);
+
+  // Derive what to show: use decrypted values when revealed, else mask/placeholder
+  const sensitiveValues = {
+    email:     revealed && decryptedRecord ? decryptedRecord.email     : undefined,
+    phone:     revealed && decryptedRecord ? decryptedRecord.phone     : undefined,
+    id_number: revealed && decryptedRecord ? decryptedRecord.id_number : undefined,
+  };
 
   const fmtDate = (unix?: number) =>
     unix ? format(new Date(unix * 1000), "MMM d, yyyy HH:mm") : "—";
@@ -151,30 +126,28 @@ function KYCDetailDrawer({
     </div>
   );
 
-  // Sensitive row — has inline reveal toggle
+  // Sensitive row — shows masked/plain depending on `revealed` + `decryptedRecord`
   const sensitiveRow = (
     icon: React.ReactNode,
     label: string,
-    field: keyof RevealState,
-    value?: string,
+    field: "email" | "phone" | "id_number",
   ) => {
-    const encrypted = isEncrypted(value);
+    const plainValue = sensitiveValues[field];
     return (
       <div className="flex items-start gap-3 py-2.5 border-b border-gray-800/70 last:border-0">
         <div className="mt-0.5 text-gray-600 shrink-0">{icon}</div>
         <div className="min-w-0 flex-1">
           <p className="text-xs text-gray-500 mb-0.5">{label}</p>
-          <EncryptedField
-            value={value}
-            revealed={revealed[field]}
-            isEncryptedOnServer={encrypted}
-          />
+          {revealed && plainValue ? (
+            // Plain text from decrypted API response
+            <span className="text-white text-sm break-all">{plainValue}</span>
+          ) : (
+            // Masked — waiting for user to reveal
+            <span className="font-mono text-gray-500 tracking-widest text-sm select-none">
+              {mask(plainValue ?? record[field as keyof KYCData] as string)}
+            </span>
+          )}
         </div>
-        <RevealToggle
-          revealed={revealed[field]}
-          onToggle={() => toggle(field)}
-          disabled={encrypted}
-        />
       </div>
     );
   };
@@ -195,25 +168,30 @@ function KYCDetailDrawer({
             <p className="text-gray-500 text-xs font-mono mt-0.5">{record.customer_id}</p>
           </div>
           <div className="flex items-center gap-2">
-            {/* Global reveal / hide toggle */}
+            {/* Single Reveal / Hide button — triggers GET /api/v1/kyc?customer_id on first use */}
             <button
-              onClick={anyRevealed ? hideAll : revealAll}
-              className={`flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg border transition-colors ${
-                anyRevealed
+              onClick={revealed ? hideFields : fetchDecrypted}
+              disabled={decrypting}
+              className={`flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg border transition-colors disabled:opacity-50 ${
+                revealed
                   ? "border-amber-700/50 bg-amber-900/20 text-amber-400 hover:bg-amber-900/30"
                   : "border-gray-700 bg-gray-800 text-gray-400 hover:text-white hover:border-gray-600"
               }`}
-              title={anyRevealed ? "Hide all sensitive fields" : "Reveal all sensitive fields"}
             >
-              {anyRevealed ? (
+              {decrypting ? (
+                <>
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                  Decrypting…
+                </>
+              ) : revealed ? (
                 <>
                   <Lock className="h-3 w-3" />
-                  Hide All
+                  Hide Fields
                 </>
               ) : (
                 <>
                   <Unlock className="h-3 w-3" />
-                  Reveal All
+                  Reveal Fields
                 </>
               )}
             </button>
@@ -267,13 +245,22 @@ function KYCDetailDrawer({
           )}
         </div>
 
-        {/* ── Sensitive data notice ── */}
-        <div className="mx-5 mt-3 flex items-center gap-2 bg-amber-950/30 border border-amber-900/40 rounded-lg px-3 py-2">
-          <AlertTriangle className="h-3.5 w-3.5 text-amber-500 shrink-0" />
-          <p className="text-xs text-amber-500/80">
-            Email, phone and ID number are masked by default. Use the eye icon or "Reveal All" to view.
-          </p>
-        </div>
+        {/* ── Sensitive data notice / decrypt error ── */}
+        {decryptError ? (
+          <div className="mx-5 mt-3 flex items-center gap-2 bg-red-950/30 border border-red-900/40 rounded-lg px-3 py-2">
+            <AlertTriangle className="h-3.5 w-3.5 text-red-400 shrink-0" />
+            <p className="text-xs text-red-400">{decryptError}</p>
+          </div>
+        ) : (
+          <div className="mx-5 mt-3 flex items-center gap-2 bg-amber-950/30 border border-amber-900/40 rounded-lg px-3 py-2">
+            <AlertTriangle className="h-3.5 w-3.5 text-amber-500 shrink-0" />
+            <p className="text-xs text-amber-500/80">
+              {revealed
+                ? "Sensitive fields decrypted — hide when done"
+                : "Email, phone and ID number are masked. Click \"Reveal Fields\" to decrypt via server."}
+            </p>
+          </div>
+        )}
 
         {/* ── Scrollable body ── */}
         <div className="flex-1 overflow-y-auto px-5 py-4 space-y-5">
@@ -299,8 +286,8 @@ function KYCDetailDrawer({
               </span>
             </p>
             <div className="bg-gray-900/50 rounded-xl border border-gray-800/60 px-4 py-1">
-              {sensitiveRow(<Mail className="h-4 w-4" />, "Email", "email", record.email)}
-              {sensitiveRow(<Phone className="h-4 w-4" />, "Phone", "phone", record.phone)}
+              {sensitiveRow(<Mail className="h-4 w-4" />, "Email", "email")}
+              {sensitiveRow(<Phone className="h-4 w-4" />, "Phone", "phone")}
             </div>
           </section>
 
@@ -314,7 +301,7 @@ function KYCDetailDrawer({
             </p>
             <div className="bg-gray-900/50 rounded-xl border border-gray-800/60 px-4 py-1">
               {row(<Hash className="h-4 w-4" />, "ID Type", record.id_type)}
-              {sensitiveRow(<Hash className="h-4 w-4" />, "ID Number", "id_number", record.id_number)}
+              {sensitiveRow(<Hash className="h-4 w-4" />, "ID Number", "id_number")}
               {row(<Calendar className="h-4 w-4" />, "ID Expiry", record.id_expiry_date)}
             </div>
           </section>
@@ -581,21 +568,17 @@ export default function KYCPage() {
                         <TableCell className="text-white font-medium">
                           {record.first_name} {record.last_name}
                         </TableCell>
-                        {/* Email — always masked in table */}
-                        <TableCell className="font-mono text-xs text-gray-500 tracking-widest">
-                          {isEncrypted(record.email) ? (
-                            <span className="text-amber-600/50 text-xs">encrypted</span>
-                          ) : (
-                            "●●●●●●●●"
-                          )}
+                        {/* Email — always masked in table; reveal via drawer */}
+                        <TableCell>
+                          <span className="font-mono text-xs text-gray-600 tracking-widest select-none">
+                            ●●●●●●●●
+                          </span>
                         </TableCell>
-                        {/* ID — always masked in table */}
-                        <TableCell className="font-mono text-xs text-gray-500 tracking-widest">
-                          {isEncrypted(record.id_number) ? (
-                            <span className="text-amber-600/50 text-xs">encrypted</span>
-                          ) : (
-                            "●●●●●●●●"
-                          )}
+                        {/* ID Number — always masked in table; reveal via drawer */}
+                        <TableCell>
+                          <span className="font-mono text-xs text-gray-600 tracking-widest select-none">
+                            ●●●●●●●●
+                          </span>
                         </TableCell>
                         <TableCell>
                           <KYCStatusBadge status={record.status} />
