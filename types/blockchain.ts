@@ -10,7 +10,7 @@ export interface Block {
 export interface BlockchainStats {
   total_blocks: number;
   total_transactions: number;
-  pending_transactions: number;
+  pending_txs: number;
   is_valid: boolean;
   last_block_time: number;
 }

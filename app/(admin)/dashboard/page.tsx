@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Users, ShieldCheck, Link as LinkIcon, Building2, TrendingUp, Clock } from "lucide-react";
+import { Users, ShieldCheck, Link as LinkIcon, Building2, TrendingUp, Clock, CircleDashed } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import api from "@/lib/api";
@@ -12,6 +12,7 @@ interface DashboardStats {
   verified_kyc: number;
   rejected_kyc: number;
   total_banks: number;
+  pending_txs: number;
   total_blocks: number;
 }
 
@@ -76,6 +77,7 @@ export default function DashboardPage() {
           verified_kyc: kycData.verified || 0,
           rejected_kyc: kycData.rejected || 0,
           total_banks: Array.isArray(banksData) ? banksData.length : 0,
+          pending_txs: bcData.pending_txs || 0,
           total_blocks: bcData.total_blocks || 0,
         });
       } catch {
@@ -128,6 +130,13 @@ export default function DashboardPage() {
           value={stats?.total_banks ?? 0}
           icon={Building2}
           color="bg-purple-600"
+          loading={loading}
+        />
+        <StatCard
+          title="Pending Transactions Blockchain"
+          value={stats?.pending_txs ?? 0}
+          icon={CircleDashed}
+          color="bg-orange-600"
           loading={loading}
         />
         <StatCard

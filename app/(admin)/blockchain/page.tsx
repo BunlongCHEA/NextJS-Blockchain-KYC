@@ -63,7 +63,7 @@ export default function BlockchainPage() {
         {[
           { label: "Total Blocks", value: stats?.total_blocks ?? 0, color: "text-blue-400" },
           { label: "Total Transactions", value: stats?.total_transactions ?? 0, color: "text-green-400" },
-          { label: "Pending Tx", value: stats?.pending_transactions ?? 0, color: "text-yellow-400" },
+          { label: "Pending Tx", value: stats?.pending_txs ?? 0, color: "text-yellow-400" },
           {
             label: "Chain Valid",
             value: stats?.is_valid ? "Yes" : "No",
