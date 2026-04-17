@@ -98,6 +98,14 @@ async function getServiceToken(): Promise<string> {
   const password = process.env.INTEGRATION_SERVICE_PASS;
   const goBase   = process.env.API_URL ?? process.env.NEXT_PUBLIC_API_URL ?? "";
 
+  // ── DEBUG: log exactly what we're using ──────────────────────────────────
+  console.log("[gateway] getServiceToken()");
+  console.log("[gateway]   API_URL          =", process.env.API_URL);
+  console.log("[gateway]   NEXT_PUBLIC_URL  =", process.env.NEXT_PUBLIC_API_URL);
+  console.log("[gateway]   goBase resolved  =", goBase);
+  console.log("[gateway]   SVC_USER         =", username ?? "(not set)");
+  console.log("[gateway]   SVC_PASS set?    =", !!password);
+
   if (!username || !password) {
     // Fallback to static token
     if (staticToken) {
@@ -108,15 +116,34 @@ async function getServiceToken(): Promise<string> {
     throw new Error("INTEGRATION_SERVICE_TOKEN or INTEGRATION_SERVICE_USER/PASS required");
   }
 
-  const res = await fetch(`${goBase}/api/v1/auth/login`, {
+  if (!goBase) {
+    throw new Error("Missing API_URL or NEXT_PUBLIC_API_URL in .env.local");
+  }
+
+  const loginURL = `${goBase}/api/v1/auth/login`;
+  console.log("[gateway]   login URL        =", loginURL);
+
+  const res = await fetch(loginURL, {
     method:  "POST",
     headers: { "Content-Type": "application/json" },
     body:    JSON.stringify({ username, password }),
   });
 
-  if (!res.ok) throw new Error(`Service account login failed: ${res.status}`);
+  // if (!res.ok) throw new Error(`Service account login failed: ${res.status}`);
 
-  const data = await res.json();
+  // ── Log the raw Go response ───────────────────────────────────────────────
+  const raw = await res.text();
+  console.log("[gateway]   login status     =", res.status);
+  console.log("[gateway]   login response   =", raw);
+
+  if (!res.ok) {
+    throw new Error(
+      `Service account login failed: ${res.status} — ${raw}`,
+    );
+  }
+
+  // const data = await res.json();
+  const data = JSON.parse(raw);
   const token = data?.data?.access_token;
   if (!token) throw new Error("No access_token in login response");
 
@@ -125,6 +152,7 @@ async function getServiceToken(): Promise<string> {
   const expiresIn = (data?.data?.expires_in ?? 86400) * 1000;
   _tokenExpiresAt = Date.now() + expiresIn;
 
+  console.log("[gateway]   token cached, expires in", expiresIn / 1000, "s");
   return token;
 }
 
