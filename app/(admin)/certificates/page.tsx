@@ -591,20 +591,49 @@ function IssueDialog({ open, onClose, onIssued, requesterKeys, banks, onOpenGene
     return "";
   };
 
-  // Bank match validation
-  const getBankMismatchWarning = (): string | null => {
+  // ── Bank match: compare customer's bank_id against key's organization ────
+  // Strategy: keys store `organization` (free text). We resolve it to a bank
+  // by checking if the key_name or organization fuzzy-matches any bank name/code.
+  // If a key can be resolved to a bank AND it doesn't match the customer's
+  // bank_id, we BLOCK issuance (not just warn).
+  const resolveKeyBank = (key: RequesterKey): Bank | null => {
+    if (!key) return null;
+    const orgLower  = key.organization.toLowerCase();
+    const nameLower = key.key_name.toLowerCase();
+    return banks.find((b) => {
+      const bName = b.name.toLowerCase();
+      const bCode = b.code.toLowerCase();
+      return (
+        orgLower.includes(bCode) || orgLower.includes(bName.split(" ")[0]) ||
+        nameLower.includes(bCode) || bName.includes(orgLower.split(" ")[0])
+      );
+    }) ?? null;
+  };
+
+  // Returns null = no conflict; string = reason to BLOCK
+  const getBankBlock = (): string | null => {
     if (!kycResult || !selectedKey) return null;
-    const customerBank = banks.find((b) => b.id === kycResult.bank_id);
-    if (!customerBank) return null;
-    const orgLower  = selectedKey.organization.toLowerCase();
-    const bankLower = customerBank.name.toLowerCase();
-    if (!orgLower.includes(bankLower.split(" ")[0]) && !bankLower.includes(orgLower.split(" ")[0])) {
-      return `Customer registered at ${customerBank.name}. Selected key is from "${selectedKey.organization}". Ensure this is correct.`;
+    const keyBank = resolveKeyBank(selectedKey);
+    // If key can't be resolved to a known bank — can't validate, allow
+    if (!keyBank) return null;
+    if (keyBank.id !== kycResult.bank_id) {
+      const customerBank = banks.find((b) => b.id === kycResult.bank_id);
+      return `Key belongs to ${keyBank.name} but customer registered at ${customerBank?.name ?? kycResult.bank_id}. Select the correct key.`;
     }
     return null;
   };
 
-  const bankMismatch = getBankMismatchWarning();
+  const bankBlock   = getBankBlock();
+  // Keep warning name for amber notice when key can't be resolved (unrecognised org)
+  const bankMismatch: string | null = (() => {
+    if (!kycResult || !selectedKey) return null;
+    if (bankBlock) return null; // already showing block, no need for warn too
+    const keyBank = resolveKeyBank(selectedKey);
+    if (keyBank) return null; // resolved and matched — all good
+    // Key org doesn't match any known bank — show advisory only
+    const customerBank = banks.find((b) => b.id === kycResult.bank_id);
+    return `Could not verify key organisation "${selectedKey.organization}" matches customer's bank (${customerBank?.name ?? kycResult.bank_id}). Proceed only if correct.`;
+  })();
 
   const handleIssue = async () => {
     if (!kycResult) {
@@ -615,6 +644,9 @@ function IssueDialog({ open, onClose, onIssued, requesterKeys, banks, onOpenGene
     }
     if ((pubKeyMode === "paste" || pubKeyMode === "file") && !pastedPubKey) {
       toast({ title: "Public key is required", variant: "destructive" }); return;
+    }
+    if (bankBlock) {
+      toast({ title: bankBlock, variant: "destructive" }); return;
     }
 
     setIssuing(true);
@@ -785,7 +817,9 @@ function IssueDialog({ open, onClose, onIssued, requesterKeys, banks, onOpenGene
                 if (key) setPubKeyMode("from_key");
               }}
             >
-              <SelectTrigger className="bg-gray-800 border-gray-700 text-gray-300">
+              <SelectTrigger className={`bg-gray-800 text-gray-300 ${
+                bankBlock ? "border-red-800" : "border-gray-700"
+              }`}>
                 <SelectValue placeholder="Select a requester key…" />
               </SelectTrigger>
               <SelectContent className="bg-gray-900 border-gray-800 max-h-52">
@@ -794,14 +828,31 @@ function IssueDialog({ open, onClose, onIssued, requesterKeys, banks, onOpenGene
                     No keys yet — generate one above
                   </div>
                 ) : (
-                  requesterKeys.filter((k) => k.is_active).map((k) => (
-                    <SelectItem key={k.id} value={k.id}>
-                      <div className="flex flex-col">
-                        <span className="text-white font-medium">{k.key_name}</span>
-                        <span className="text-gray-500 text-xs">{k.organization} · {k.key_type}-{k.key_size}</span>
-                      </div>
-                    </SelectItem>
-                  ))
+                  requesterKeys.filter((k) => k.is_active).map((k) => {
+                    const keyBank   = resolveKeyBank(k);
+                    const isMatch   = !kycResult || !keyBank || keyBank.id === kycResult.bank_id;
+                    const canResolve = keyBank !== null;
+                    return (
+                      <SelectItem key={k.id} value={k.id}>
+                        <div className="flex items-center gap-2 w-full">
+                          <div className="flex flex-col flex-1 min-w-0">
+                            <span className={`font-medium ${isMatch ? "text-white" : "text-gray-500"}`}>
+                              {k.key_name}
+                            </span>
+                            <span className="text-gray-500 text-xs">
+                              {k.organization} · {k.key_type}-{k.key_size}
+                            </span>
+                          </div>
+                          {/* Bank match indicator — only when customer is selected */}
+                          {kycResult && canResolve && (
+                            isMatch
+                              ? <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400 shrink-0" />
+                              : <XCircle      className="h-3.5 w-3.5 text-red-400 shrink-0" />
+                          )}
+                        </div>
+                      </SelectItem>
+                    );
+                  })
                 )}
               </SelectContent>
             </Select>
@@ -828,7 +879,15 @@ function IssueDialog({ open, onClose, onIssued, requesterKeys, banks, onOpenGene
               </div>
             )}
 
-            {/* Bank mismatch warning */}
+            {/* Hard bank mismatch — blocks issuance */}
+            {bankBlock && (
+              <div className="flex items-start gap-2 bg-red-950/30 border border-red-800/50 rounded-lg px-3 py-2">
+                <XCircle className="h-3.5 w-3.5 text-red-400 shrink-0 mt-0.5" />
+                <p className="text-xs text-red-400">{bankBlock}</p>
+              </div>
+            )}
+
+            {/* Soft advisory — unrecognised org, allow but warn */}
             {bankMismatch && (
               <div className="flex items-start gap-2 bg-amber-950/30 border border-amber-800/40 rounded-lg px-3 py-2">
                 <AlertTriangle className="h-3.5 w-3.5 text-amber-400 shrink-0 mt-0.5" />
@@ -931,15 +990,30 @@ function IssueDialog({ open, onClose, onIssued, requesterKeys, banks, onOpenGene
 
           <div className="flex justify-end gap-2 pt-1">
             <Button variant="outline" onClick={onClose} className="border-gray-700 text-gray-300" disabled={issuing}>Cancel</Button>
-            <Button
-              onClick={handleIssue}
-              disabled={issuing || !kycResult}
-              className="bg-cyan-700 hover:bg-cyan-600 text-white"
-            >
-              {issuing
-                ? <><Loader2 className="h-4 w-4 mr-1.5 animate-spin" />Issuing…</>
-                : <><ShieldCheck className="h-4 w-4 mr-1.5" />Issue Certificate</>}
-            </Button>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span tabIndex={0}>
+                  <Button
+                    onClick={handleIssue}
+                    disabled={issuing || !kycResult || !!bankBlock}
+                    className={`${
+                      bankBlock
+                        ? "bg-gray-700 text-gray-500 cursor-not-allowed"
+                        : "bg-cyan-700 hover:bg-cyan-600 text-white"
+                    }`}
+                  >
+                    {issuing
+                      ? <><Loader2 className="h-4 w-4 mr-1.5 animate-spin" />Issuing…</>
+                      : <><ShieldCheck className="h-4 w-4 mr-1.5" />Issue Certificate</>}
+                  </Button>
+                </span>
+              </TooltipTrigger>
+              {bankBlock && (
+                <TooltipContent className="bg-gray-800 border-gray-700 text-xs max-w-xs">
+                  {bankBlock}
+                </TooltipContent>
+              )}
+            </Tooltip>
           </div>
         </div>
       </DialogContent>
