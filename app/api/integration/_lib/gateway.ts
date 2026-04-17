@@ -1,0 +1,410 @@
+/**
+ * Integration Gateway — shared middleware for /api/integration/<feature>
+ *
+ * Flow:
+ *  1. Extract  Authorization: Bearer <raw_key>
+ *  2. SHA-256 hash it → look up in localStorage-persisted keys (via cookie/header fallback)
+ *     NOTE: localStorage is browser-only. On the server we read from the
+ *     X-Int-Keys-Store header OR a server-side KV (file-based fallback for simplicity).
+ *  3. Validate: is_active, !is_deleted, scope allowed, not expired
+ *  4. Increment request_count + scope_counts
+ *  5. Proxy to Go backend with the system service JWT from INTEGRATION_SERVICE_TOKEN env
+ */
+
+import { NextRequest, NextResponse } from "next/server";
+import { readFileSync, writeFileSync, existsSync } from "fs";
+import { join } from "path";
+
+// ─── Types (mirror keys/page.tsx) ─────────────────────────────────────────────
+
+type Scope =
+  | "kyc:read"    | "kyc:write"   | "kyc:verify"
+  | "users:read"  | "users:write"
+  | "blockchain:read" | "blockchain:mine"
+  | "banks:read"  | "banks:write"
+  | "certificates:issue" | "certificates:verify"
+  | "audit:read";
+
+interface IntegrationKey {
+  id:                  string;
+  name:                string;
+  description:         string;
+  organization:        string;
+  key_prefix:          string;
+  key_hash:            string;
+  is_active:           boolean;
+  is_deleted:          boolean;
+  scopes:              Scope[];
+  created_at:          number;
+  expires_at:          number;
+  last_used_at:        number;
+  request_count:       number;
+  request_count_today: number;
+  scope_counts:        Partial<Record<Scope, number>>;
+  scope_counts_today:  Partial<Record<Scope, number>>;
+}
+
+// ─── Server-side key store (JSON file — persists across requests) ─────────────
+// Path: <project_root>/.int_keys_store.json
+// The browser's localStorage is synced here via POST /api/integration/_sync
+
+const STORE_PATH = join(process.cwd(), ".int_keys_store.json");
+
+export function readServerKeys(): IntegrationKey[] {
+  try {
+    if (!existsSync(STORE_PATH)) return [];
+    return JSON.parse(readFileSync(STORE_PATH, "utf-8")) as IntegrationKey[];
+  } catch { return []; }
+}
+
+export function writeServerKeys(keys: IntegrationKey[]): void {
+  writeFileSync(STORE_PATH, JSON.stringify(keys, null, 2), "utf-8");
+}
+
+// ─── SHA-256 (server-side Web Crypto) ─────────────────────────────────────────
+
+async function sha256hex(text: string): Promise<string> {
+  const buf = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(text),
+  );
+  return Array.from(new Uint8Array(buf))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+// ─── Service token — cached in memory, auto-refreshed on expiry ───────────────
+
+let _cachedToken: string | null = null;
+let _tokenExpiresAt = 0;
+
+async function getServiceToken(): Promise<string> {
+  // Return cached token if still valid (with 60s buffer)
+  if (_cachedToken && Date.now() < _tokenExpiresAt - 60_000) {
+    return _cachedToken;
+  }
+
+  // Option A: static token from env (no expiry management)
+  const staticToken = process.env.INTEGRATION_SERVICE_TOKEN;
+  if (staticToken && !staticToken.startsWith("eyJ")) {
+    // Not a JWT — treat as API key, return as-is
+    _cachedToken = staticToken;
+    _tokenExpiresAt = Date.now() + 24 * 3600_000;
+    return staticToken;
+  }
+
+  // Option B: auto-login with service account credentials
+  const username = process.env.INTEGRATION_SERVICE_USER;
+  const password = process.env.INTEGRATION_SERVICE_PASS;
+  const goBase   = process.env.API_URL ?? process.env.NEXT_PUBLIC_API_URL ?? "";
+
+  if (!username || !password) {
+    // Fallback to static token
+    if (staticToken) {
+      _cachedToken = staticToken;
+      _tokenExpiresAt = Date.now() + 3600_000;
+      return staticToken;
+    }
+    throw new Error("INTEGRATION_SERVICE_TOKEN or INTEGRATION_SERVICE_USER/PASS required");
+  }
+
+  const res = await fetch(`${goBase}/api/v1/auth/login`, {
+    method:  "POST",
+    headers: { "Content-Type": "application/json" },
+    body:    JSON.stringify({ username, password }),
+  });
+
+  if (!res.ok) throw new Error(`Service account login failed: ${res.status}`);
+
+  const data = await res.json();
+  const token = data?.data?.access_token;
+  if (!token) throw new Error("No access_token in login response");
+
+  _cachedToken    = token;
+  // Go JWT expires_in is in seconds — default 86400 (24h)
+  const expiresIn = (data?.data?.expires_in ?? 86400) * 1000;
+  _tokenExpiresAt = Date.now() + expiresIn;
+
+  return token;
+}
+
+// ─── Feature → Go API mapping ─────────────────────────────────────────────────
+
+export type Feature =
+  | "kyc" | "users" | "blockchain" | "banks" | "certificates" | "audit";
+
+interface RouteMap {
+  // action → { method, path }
+  [action: string]: { method: string; path: string };
+}
+
+const FEATURE_MAP: Record<Feature, RouteMap> = {
+  kyc: {
+    list:         { method: "GET",  path: "/api/v1/kyc/list"    },
+    get:          { method: "GET",  path: "/api/v1/kyc"         },
+    create:       { method: "POST", path: "/api/v1/kyc"         },
+    update:       { method: "PUT",  path: "/api/v1/kyc"         },
+    verify:       { method: "POST", path: "/api/v1/kyc/verify"  },
+    reject:       { method: "POST", path: "/api/v1/kyc/reject"  },
+    stats:        { method: "GET",  path: "/api/v1/kyc/stats"   },
+    history:      { method: "GET",  path: "/api/v1/kyc/history" },
+  },
+  users: {
+    list:         { method: "GET",    path: "/api/v1/users/list"           },
+    create:       { method: "POST",   path: "/api/v1/users"                },
+    update:       { method: "PATCH",  path: "/api/v1/users"                },
+    delete:       { method: "DELETE", path: "/api/v1/users"                },
+    reset_password: { method: "POST", path: "/api/v1/users/reset-password" },
+  },
+  blockchain: {
+    stats:        { method: "GET",  path: "/api/v1/blockchain/stats"    },
+    blocks:       { method: "GET",  path: "/api/v1/blockchain/blocks"   },
+    block:        { method: "GET",  path: "/api/v1/blockchain/block"    },
+    pending:      { method: "GET",  path: "/api/v1/blockchain/pending"  },
+    validate:     { method: "GET",  path: "/api/v1/blockchain/validate" },
+    mine:         { method: "POST", path: "/api/v1/blockchain/mine"     },
+  },
+  banks: {
+    list:         { method: "GET",  path: "/api/v1/banks/list" },
+    get:          { method: "GET",  path: "/api/v1/banks"      },
+    create:       { method: "POST", path: "/api/v1/banks"      },
+  },
+  certificates: {
+    list:         { method: "GET",  path: "/api/v1/certificates/list"  },
+    issue:        { method: "POST", path: "/api/v1/certificate/issue"  },
+    verify:       { method: "POST", path: "/api/v1/certificate/verify" },
+  },
+  audit: {
+    logs:         { method: "GET", path: "/api/v1/audit/logs"      },
+    alerts:       { method: "GET", path: "/api/v1/security/alerts" },
+  },
+};
+
+// ─── Scope required per feature+action ────────────────────────────────────────
+
+function requiredScope(feature: Feature, action: string): Scope | null {
+  const writeActions = ["create", "update", "delete", "reset_password"];
+  const verifyActions = ["verify", "reject", "auto_verify"];
+  const mineActions = ["mine"];
+  const issueActions = ["issue"];
+  const certVerifyActions = ["verify"]; // certificates feature
+
+  if (feature === "kyc") {
+    if (verifyActions.includes(action)) return "kyc:verify";
+    if (writeActions.includes(action)) return "kyc:write";
+    return "kyc:read";
+  }
+  if (feature === "users") {
+    if (writeActions.includes(action)) return "users:write";
+    return "users:read";
+  }
+  if (feature === "blockchain") {
+    if (mineActions.includes(action)) return "blockchain:mine";
+    return "blockchain:read";
+  }
+  if (feature === "banks") {
+    if (writeActions.includes(action)) return "banks:write";
+    return "banks:read";
+  }
+  if (feature === "certificates") {
+    if (issueActions.includes(action)) return "certificates:issue";
+    if (certVerifyActions.includes(action)) return "certificates:verify";
+    return "certificates:verify";
+  }
+  if (feature === "audit") return "audit:read";
+  return null;
+}
+
+// ─── Update stats in store ────────────────────────────────────────────────────
+
+function updateStats(keyId: string, scope: Scope): void {
+  try {
+    const keys = readServerKeys();
+    const idx  = keys.findIndex((k) => k.id === keyId);
+    if (idx === -1) return;
+
+    const k = keys[idx];
+    const today = new Date().toDateString();
+
+    // Reset today counter if it's a new day (we store the date in a sidecar field)
+    const storedDate = (k as any)._today_date as string | undefined;
+    if (storedDate !== today) {
+      k.request_count_today = 0;
+      k.scope_counts_today  = {};
+      (k as any)._today_date = today;
+    }
+
+    k.request_count++;
+    k.request_count_today++;
+    k.last_used_at = Date.now();
+    k.scope_counts[scope]       = (k.scope_counts[scope]       ?? 0) + 1;
+    k.scope_counts_today[scope] = (k.scope_counts_today[scope] ?? 0) + 1;
+
+    keys[idx] = k;
+    writeServerKeys(keys);
+  } catch {
+    // Non-fatal — don't fail the proxy because of stats
+  }
+}
+
+// ─── Main gateway handler ───────────────────────────────────────��─────────────
+
+export async function gatewayHandler(
+  req: NextRequest,
+  feature: Feature,
+): Promise<NextResponse> {
+  // 1. Extract raw key
+  const authHeader = req.headers.get("authorization") ?? "";
+  const rawKey = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : "";
+
+  if (!rawKey) {
+    return NextResponse.json(
+      { success: false, error: "Missing Authorization header" },
+      { status: 401 },
+    );
+  }
+
+  // 2. Hash + look up
+  const hash = await sha256hex(rawKey);
+  const keys = readServerKeys();
+  const key  = keys.find((k) => k.key_hash === hash);
+
+  if (!key) {
+    return NextResponse.json(
+      { success: false, error: "Invalid API key" },
+      { status: 401 },
+    );
+  }
+
+  // 3. Validate key status
+  if (key.is_deleted) {
+    return NextResponse.json(
+      { success: false, error: "API key has been deleted" },
+      { status: 403 },
+    );
+  }
+  if (!key.is_active) {
+    return NextResponse.json(
+      { success: false, error: "API key is disabled" },
+      { status: 403 },
+    );
+  }
+  if (key.expires_at > 0 && key.expires_at < Date.now()) {
+    return NextResponse.json(
+      { success: false, error: "API key has expired" },
+      { status: 403 },
+    );
+  }
+
+  // 4. Parse body
+  let body: Record<string, unknown> = {};
+  try {
+    const text = await req.text();
+    if (text) body = JSON.parse(text);
+  } catch {
+    return NextResponse.json(
+      { success: false, error: "Invalid JSON body" },
+      { status: 400 },
+    );
+  }
+
+  const action = (body.action as string) ?? "";
+  if (!action) {
+    return NextResponse.json(
+      {
+        success: false,
+        error:   "Missing required field: action",
+        hint:    `Available actions for '${feature}': ${Object.keys(FEATURE_MAP[feature] ?? {}).join(", ")}`,
+      },
+      { status: 400 },
+    );
+  }
+
+  // 5. Resolve route
+  const featureRoutes = FEATURE_MAP[feature];
+  if (!featureRoutes) {
+    return NextResponse.json(
+      { success: false, error: `Unknown feature: ${feature}` },
+      { status: 404 },
+    );
+  }
+  const route = featureRoutes[action];
+  if (!route) {
+    return NextResponse.json(
+      {
+        success: false,
+        error:   `Unknown action '${action}' for feature '${feature}'`,
+        available: Object.keys(featureRoutes),
+      },
+      { status: 400 },
+    );
+  }
+
+  // 6. Check scope
+  const needed = requiredScope(feature, action);
+  if (needed && !key.scopes.includes(needed)) {
+    return NextResponse.json(
+      {
+        success: false,
+        error:   `API key does not have required scope: ${needed}`,
+        granted: key.scopes,
+      },
+      { status: 403 },
+    );
+  }
+
+  // 7. Build Go request
+  const goBase  = process.env.API_URL ?? process.env.NEXT_PUBLIC_API_URL ?? "";
+  const params  = (body.params as Record<string, string>) ?? {};
+  const payload = body.data ?? body.payload ?? null;
+
+  const url = new URL(route.path, goBase);
+  Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, String(v)));
+
+  const serviceToken = await getServiceToken();
+  if (!serviceToken) {
+    return NextResponse.json(
+      { success: false, error: "Server misconfiguration: INTEGRATION_SERVICE_TOKEN not set" },
+      { status: 500 },
+    );
+  }
+
+  // 8. Proxy to Go
+  try {
+    const goRes = await fetch(url.toString(), {
+      method:  route.method,
+      headers: {
+        "Content-Type":  "application/json",
+        "Authorization": `Bearer ${serviceToken}`,
+      },
+      body: ["GET", "HEAD"].includes(route.method)
+        ? undefined
+        : JSON.stringify(payload ?? {}),
+    });
+
+    const responseData = await goRes.json().catch(() => ({}));
+
+    // 9. Update stats (non-blocking)
+    if (needed) updateStats(key.id, needed);
+
+    return NextResponse.json(
+      {
+        ...responseData,
+        _gateway: {
+          key_name:  key.name,
+          feature,
+          action,
+          scope:     needed,
+          proxied_by: "nextjs-integration-gateway",
+        },
+      },
+      { status: goRes.status },
+    );
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : "Proxy error";
+    return NextResponse.json(
+      { success: false, error: `Failed to reach Go backend: ${message}` },
+      { status: 502 },
+    );
+  }
+}
