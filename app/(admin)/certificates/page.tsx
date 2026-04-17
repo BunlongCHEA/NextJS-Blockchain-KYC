@@ -4,9 +4,9 @@ import { useEffect, useState, useCallback, useRef } from "react";
 import {
   ShieldCheck, RefreshCw, Download, Plus, Search,
   CheckCircle2, XCircle, Clock, AlertTriangle, Copy,
-  Eye, Loader2, FileKey2, CalendarClock, BadgeCheck,
+  Eye, EyeOff, Loader2, FileKey2, CalendarClock, BadgeCheck,
   Hash, Key, Building2, Upload, ChevronDown, X,
-  Sparkles, AlertCircle, Info,
+  Sparkles, AlertCircle, Info, ShieldX,
 } from "lucide-react";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -161,9 +161,11 @@ interface GenerateKeyDialogProps {
   onClose: () => void;
   banks: Bank[];
   onGenerated: (key: RequesterKey) => void;
+  onViewDetail: (key: RequesterKey) => void;
+  onRevoke: (key: RequesterKey) => void;
 }
 
-function GenerateKeyDialog({ open, onClose, banks, onGenerated }: GenerateKeyDialogProps) {
+function GenerateKeyDialog({ open, onClose, banks, onGenerated, onViewDetail, onRevoke }: GenerateKeyDialogProps) {
   const { toast } = useToast();
   const [form, setForm] = useState({
     key_name: "", key_type: "ECDSA", key_size: 256,
@@ -434,32 +436,311 @@ function GenerateKeyDialog({ open, onClose, banks, onGenerated }: GenerateKeyDia
                   {generatedResult.private_key_pem}
                 </pre>
               </div>
-              <div className="flex gap-2 mt-2">
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={copyPrivateKey}
-                  className={`flex-1 border-gray-700 text-xs ${copied ? "text-green-400 border-green-700" : "text-gray-300"}`}
-                >
-                  <Copy className="h-3.5 w-3.5 mr-1.5" />
-                  {copied ? "Copied!" : "Copy PEM"}
-                </Button>
-                <Button
-                  size="sm"
-                  onClick={downloadPrivateKey}
-                  className="flex-1 bg-amber-700 hover:bg-amber-600 text-white text-xs"
-                >
-                  <Download className="h-3.5 w-3.5 mr-1.5" />
-                  Download .pem file
-                </Button>
-              </div>
+              <div className="flex gap-2">
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={copyPrivateKey}
+                className={`flex-1 border-gray-700 text-xs ${copied ? "text-green-400 border-green-700" : "text-gray-300"}`}
+              >
+                <Copy className="h-3.5 w-3.5 mr-1.5" />
+                {copied ? "Copied!" : "Copy PEM"}
+              </Button>
+              <Button
+                size="sm"
+                onClick={downloadPrivateKey}
+                className="flex-1 bg-amber-700 hover:bg-amber-600 text-white text-xs"
+              >
+                <Download className="h-3.5 w-3.5 mr-1.5" />
+                Download .pem file
+              </Button>
             </div>
+          </div>
 
-            <Button onClick={onClose} className="w-full bg-gray-700 hover:bg-gray-600 text-white">
-              Done — I have saved my private key
+          <div className="flex gap-2 pt-1">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => onViewDetail(generatedResult.key)}
+              className="flex-1 border-gray-700 text-gray-300 hover:text-white text-xs"
+            >
+              <Eye className="h-3.5 w-3.5 mr-1.5" />
+              View Key Details
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => onRevoke(generatedResult.key)}
+              className="flex-1 border-red-900/50 text-red-400 hover:bg-red-900/20 text-xs"
+            >
+              <ShieldX className="h-3.5 w-3.5 mr-1.5" />
+              Revoke Key
             </Button>
           </div>
+
+          <Button onClick={onClose} className="w-full bg-gray-700 hover:bg-gray-600 text-white">
+            Done — I have saved my private key
+          </Button>
+        </div>
+      )}
+    </DialogContent>
+  </Dialog>
+);
+}
+
+// ─── Key Detail Dialog ────────────────────────────────────────────────────────
+// Calls GET /api/v1/keys/info?key_id=X
+
+function KeyDetailDialog({
+  keyId,
+  onClose,
+  onRevoke,
+}: {
+  keyId: string | null;
+  onClose: () => void;
+  onRevoke: (key: RequesterKey) => void;
+}) {
+  const { toast } = useToast();
+  const [keyData, setKeyData]   = useState<RequesterKey | null>(null);
+  const [loading, setLoading]   = useState(false);
+  const [showPubKey, setShowPubKey] = useState(false);
+
+  useEffect(() => {
+    if (!keyId) { setKeyData(null); return; }
+    setLoading(true);
+    setShowPubKey(false);
+    api.get("/api/v1/keys/info", { params: { key_id: keyId } })
+      .then((res) => {
+        const data = res.data?.data?.key ?? res.data?.data ?? res.data;
+        setKeyData(data);
+      })
+      .catch(() => toast({ title: "Failed to load key details", variant: "destructive" }))
+      .finally(() => setLoading(false));
+  }, [keyId]);
+
+  const copy = (text: string, label: string) => {
+    navigator.clipboard.writeText(text);
+    toast({ title: `${label} copied` });
+  };
+
+  const daysUntilExpiry = keyData
+    ? differenceInDays(keyData.expires_at * 1000, Date.now())
+    : 0;
+
+  const expiryStatus =
+    daysUntilExpiry < 0    ? { color: "text-red-400",    label: "Expired"       } :
+    daysUntilExpiry <= 30  ? { color: "text-amber-400",  label: "Expiring soon" } :
+                             { color: "text-emerald-400", label: "Valid"         };
+
+  return (
+    <Dialog open={!!keyId} onOpenChange={onClose}>
+      <DialogContent className="bg-gray-900 border-gray-800 text-white max-w-md max-h-[90vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2 text-white">
+            <Key className="h-5 w-5 text-violet-400" />
+            Requester Key Details
+          </DialogTitle>
+          <DialogDescription className="text-gray-500 text-xs">
+            <code className="text-cyan-400">GET /api/v1/keys/info?key_id={keyId?.slice(0, 12)}…</code>
+          </DialogDescription>
+        </DialogHeader>
+
+        {loading ? (
+          <div className="space-y-2 py-4">
+            {[...Array(6)].map((_, i) => (
+              <Skeleton key={i} className="h-4 w-full bg-gray-800 rounded" />
+            ))}
+          </div>
+        ) : keyData ? (
+          <div className="space-y-4 mt-1">
+            {/* Status banner */}
+            <div className={`flex items-center justify-between rounded-lg border px-3.5 py-2.5 ${
+              keyData.is_active
+                ? "bg-emerald-950/20 border-emerald-800/40"
+                : "bg-red-950/20 border-red-800/40"
+            }`}>
+              <div className="flex items-center gap-2">
+                {keyData.is_active
+                  ? <CheckCircle2 className="h-4 w-4 text-emerald-400" />
+                  : <XCircle      className="h-4 w-4 text-red-400" />}
+                <span className={`text-sm font-medium ${keyData.is_active ? "text-emerald-300" : "text-red-300"}`}>
+                  {keyData.is_active ? "Active" : "Revoked"}
+                </span>
+              </div>
+              <span className={`text-xs ${expiryStatus.color}`}>
+                {expiryStatus.label}
+                {daysUntilExpiry > 0 && ` · ${daysUntilExpiry}d left`}
+                {daysUntilExpiry < 0 && ` · ${Math.abs(daysUntilExpiry)}d ago`}
+              </span>
+            </div>
+
+            {/* Fields */}
+            <div className="bg-gray-800/40 rounded-lg border border-gray-700/50 px-4 py-2 space-y-0">
+              {[
+                { label: "Key ID",       value: keyData.id,           mono: true  },
+                { label: "Key Name",     value: keyData.key_name                  },
+                { label: "Type / Size",  value: `${keyData.key_type} ${keyData.key_size}-bit` },
+                { label: "Fingerprint",  value: keyData.fingerprint,  mono: true  },
+                { label: "Organization", value: keyData.organization               },
+                { label: "Email",        value: keyData.email                     },
+                { label: "Description",  value: keyData.description               },
+                { label: "Created",      value: keyData.created_at ? format(new Date(keyData.created_at * 1000), "MMM d, yyyy HH:mm") : "—" },
+                { label: "Expires",      value: keyData.expires_at ? format(new Date(keyData.expires_at * 1000), "MMM d, yyyy") : "—" },
+                { label: "Created By",   value: keyData.created_by, mono: true   },
+              ].filter((f) => f.value).map(({ label, value, mono }) => (
+                <div key={label} className="flex justify-between items-start gap-3 py-2 border-b border-gray-800/60 last:border-0">
+                  <span className="text-xs text-gray-500 shrink-0 w-24">{label}</span>
+                  <div className="flex items-center gap-1.5 min-w-0 flex-1 justify-end">
+                    <span className={`text-xs text-right break-all ${mono ? "font-mono text-cyan-400" : "text-gray-200"}`}>
+                      {value}
+                    </span>
+                    {mono && value && (
+                      <button onClick={() => copy(value!, label)} className="text-gray-600 hover:text-gray-300 shrink-0">
+                        <Copy className="h-3 w-3" />
+                      </button>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {/* Public key toggle */}
+            <div>
+              <button
+                onClick={() => setShowPubKey((p) => !p)}
+                className="flex items-center gap-1.5 text-xs text-gray-500 hover:text-gray-300 transition-colors"
+              >
+                {showPubKey ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+                {showPubKey ? "Hide" : "Show"} Public Key PEM
+              </button>
+              {showPubKey && keyData.public_key_pem && (
+                <div className="mt-2 relative">
+                  <pre className="bg-gray-950 rounded-lg border border-gray-800 p-3 font-mono text-xs text-cyan-400 overflow-auto max-h-28 whitespace-pre-wrap break-all">
+                    {keyData.public_key_pem}
+                  </pre>
+                  <button
+                    onClick={() => copy(keyData.public_key_pem, "Public key")}
+                    className="absolute top-2 right-2 text-gray-600 hover:text-gray-300"
+                  >
+                    <Copy className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {/* Actions */}
+            <div className="flex justify-between items-center pt-1">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => keyData.is_active && onRevoke(keyData)}
+                disabled={!keyData.is_active}
+                className="border-red-900/50 text-red-400 hover:bg-red-900/20 disabled:opacity-40 disabled:cursor-not-allowed text-xs"
+              >
+                <ShieldX className="h-3.5 w-3.5 mr-1.5" />
+                {keyData.is_active ? "Revoke Key" : "Already Revoked"}
+              </Button>
+              <Button size="sm" onClick={onClose} className="bg-gray-700 hover:bg-gray-600 text-white text-xs">
+                Close
+              </Button>
+            </div>
+          </div>
+        ) : (
+          <p className="text-gray-500 text-sm text-center py-8">Key not found</p>
         )}
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ─── Revoke Confirm Dialog ────────────────────────────────────────────────────
+// Calls POST /api/v1/keys/revoke  (admin only)
+
+function RevokeConfirmDialog({
+  keyToRevoke,
+  onClose,
+  onRevoked,
+}: {
+  keyToRevoke: RequesterKey | null;
+  onClose: () => void;
+  onRevoked: (keyId: string) => void;
+}) {
+  const { toast }           = useToast();
+  const [reason, setReason] = useState("");
+  const [revoking, setRevoking] = useState(false);
+
+  useEffect(() => { if (keyToRevoke) setReason(""); }, [keyToRevoke]);
+
+  const handleRevoke = async () => {
+    if (!keyToRevoke) return;
+    setRevoking(true);
+    try {
+      // POST /api/v1/keys/revoke  — admin only
+      await api.post("/api/v1/keys/revoke", {
+        key_id: keyToRevoke.id,
+        reason: reason || "Revoked by admin",
+      });
+      toast({ title: `Key "${keyToRevoke.key_name}" revoked` });
+      onRevoked(keyToRevoke.id);
+      onClose();
+    } catch (err: any) {
+      toast({ title: err?.response?.data?.error || "Failed to revoke key", variant: "destructive" });
+    } finally {
+      setRevoking(false);
+    }
+  };
+
+  return (
+    <Dialog open={!!keyToRevoke} onOpenChange={onClose}>
+      <DialogContent className="bg-gray-900 border-gray-800 text-white max-w-sm">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2 text-red-400">
+            <ShieldX className="h-5 w-5" />
+            Revoke Requester Key
+          </DialogTitle>
+          <DialogDescription className="text-gray-500 text-xs">
+            <code className="text-cyan-400">POST /api/v1/keys/revoke</code> — admin only. This cannot be undone.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-4 mt-1">
+          <div className="bg-red-950/20 border border-red-800/40 rounded-lg px-3.5 py-3">
+            <p className="text-sm text-red-300 font-medium">{keyToRevoke?.key_name}</p>
+            <p className="text-xs text-gray-500 mt-0.5">{keyToRevoke?.organization}</p>
+            <p className="text-xs text-gray-600 font-mono mt-1">{keyToRevoke?.fingerprint}</p>
+          </div>
+
+          <div className="space-y-1.5">
+            <Label className="text-gray-300 text-sm">Reason <span className="text-gray-600 font-normal">(optional)</span></Label>
+            <Input
+              placeholder="e.g. Annual rotation, key compromise…"
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+              className="bg-gray-800 border-gray-700 text-white placeholder:text-gray-600 text-sm"
+            />
+          </div>
+
+          <p className="text-xs text-amber-500/80 flex items-start gap-1.5">
+            <AlertTriangle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
+            Revoking this key will not invalidate certificates already issued using it.
+            New certificates cannot be issued with this key after revocation.
+          </p>
+
+          <div className="flex justify-end gap-2 pt-1">
+            <Button variant="outline" onClick={onClose} className="border-gray-700 text-gray-300" disabled={revoking}>
+              Cancel
+            </Button>
+            <Button
+              onClick={handleRevoke}
+              disabled={revoking}
+              className="bg-red-700 hover:bg-red-600 text-white"
+            >
+              {revoking
+                ? <><Loader2 className="h-4 w-4 mr-1.5 animate-spin" />Revoking…</>
+                : <><ShieldX className="h-4 w-4 mr-1.5" />Confirm Revoke</>}
+            </Button>
+          </div>
+        </div>
       </DialogContent>
     </Dialog>
   );
@@ -501,12 +782,16 @@ function IssueDialog({ open, onClose, onIssued, requesterKeys, banks, onOpenGene
   const [validityDays,   setValidityDays]   = useState(365);
   const [issuing,        setIssuing]        = useState(false);
 
+  // Existing active certs for this customer + requester combination
+  const [existingCerts,    setExistingCerts]    = useState<Certificate[]>([]);
+  const [confirmDuplicate, setConfirmDuplicate] = useState(false);
+
   useEffect(() => {
     if (open) {
       setCustomerSearch(""); setKycResult(null); setKycError(null);
       setSelectedKey(null); setPastedPubKey(""); setFileLoadError(null);
       setPubKeyMode("from_key"); setValidityDays(365);
-      setShowKycDropdown(false);
+      setShowKycDropdown(false); setExistingCerts([]); setConfirmDuplicate(false);
     }
   }, [open]);
 
@@ -539,11 +824,36 @@ function IssueDialog({ open, onClose, onIssued, requesterKeys, banks, onOpenGene
       k.last_name.toLowerCase().includes(q);
   });
 
+  // Check for existing active certs when both customer + key are selected
+  // GET /api/v1/certificates/list?requester_id=X then filter by customer_id client-side
+  useEffect(() => {
+    setExistingCerts([]);
+    setConfirmDuplicate(false);
+    if (!kycResult || (!selectedKey && pubKeyMode === "from_key")) return;
+
+    const requesterId = selectedKey?.key_name ?? selectedKey?.id ?? "";
+    if (!requesterId) return;
+
+    api.get("/api/v1/certificates/list", { params: { requester_id: requesterId, limit: 50 } })
+      .then((res) => {
+        const all: Certificate[] = res.data?.data || [];
+        // Filter to same customer, not yet expired past grace period
+        const active = all.filter((c) =>
+          c.customer_id === kycResult.customer_id &&
+          differenceInDays(c.expires_at * 1000, Date.now()) >= -7
+        );
+        setExistingCerts(active);
+      })
+      .catch(() => setExistingCerts([]));
+  }, [kycResult?.customer_id, selectedKey?.id, pubKeyMode]);
+
   const selectKYC = (kyc: KYCLookup) => {
     setCustomerSearch(`${kyc.first_name} ${kyc.last_name} (${kyc.customer_id})`);
     setKycResult(kyc);
     setShowKycDropdown(false);
     setKycError(null);
+    setConfirmDuplicate(false);
+    setExistingCerts([]);
     // If selected key is from a different bank, warn
     if (selectedKey) {
       const keyBank = banks.find((b) => {
@@ -647,6 +957,11 @@ function IssueDialog({ open, onClose, onIssued, requesterKeys, banks, onOpenGene
     }
     if (bankBlock) {
       toast({ title: bankBlock, variant: "destructive" }); return;
+    }
+    // First click when duplicates exist — show confirmation banner, don't issue yet
+    if (existingCerts.length > 0 && !confirmDuplicate) {
+      setConfirmDuplicate(true);
+      return;
     }
 
     setIssuing(true);
@@ -965,6 +1280,67 @@ function IssueDialog({ open, onClose, onIssued, requesterKeys, banks, onOpenGene
             </p>
           </div>
 
+          {/* ── Duplicate cert warning ── */}
+          {existingCerts.length > 0 && (
+            <div className={`rounded-lg border px-3.5 py-3 space-y-2 ${
+              confirmDuplicate
+                ? "bg-red-950/30 border-red-800/50"
+                : "bg-amber-950/30 border-amber-800/50"
+            }`}>
+              <div className="flex items-start gap-2">
+                <AlertTriangle className={`h-4 w-4 shrink-0 mt-0.5 ${confirmDuplicate ? "text-red-400" : "text-amber-400"}`} />
+                <div className="flex-1 min-w-0">
+                  <p className={`text-sm font-semibold ${confirmDuplicate ? "text-red-300" : "text-amber-300"}`}>
+                    {existingCerts.length} active certificate{existingCerts.length > 1 ? "s" : ""} already exist{existingCerts.length === 1 ? "s" : ""}
+                  </p>
+                  <p className="text-xs text-gray-400 mt-0.5">
+                    Issuing again will create a <span className="font-medium text-white">new additional certificate</span>.
+                    The existing one{existingCerts.length > 1 ? "s" : ""} will remain valid until expiry.
+                    This is normal for renewals — old cert stays active until you retire it.
+                  </p>
+                </div>
+              </div>
+
+              {/* Existing cert list */}
+              <div className="space-y-1.5 ml-6">
+                {existingCerts.map((c) => {
+                  const daysLeft = differenceInDays(c.expires_at * 1000, Date.now());
+                  const certStatus = getCertStatus(c);
+                  const cfg = STATUS_CFG[certStatus];
+                  return (
+                    <div key={c.certificate_id} className="flex items-center justify-between bg-gray-900/60 rounded px-2.5 py-1.5 text-xs">
+                      <span className="font-mono text-gray-400">{c.certificate_id?.slice(0, 18)}…</span>
+                      <div className="flex items-center gap-2">
+                        <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full border text-xs ${cfg.color}`}>
+                          <cfg.Icon className="h-2.5 w-2.5" />{cfg.label}
+                        </span>
+                        <span className="text-gray-500">
+                          {daysLeft < 0 ? `${Math.abs(daysLeft)}d ago` : `${daysLeft}d left`}
+                        </span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              {/* Confirm prompt */}
+              {confirmDuplicate && (
+                <div className="ml-6 flex items-center gap-2 pt-1">
+                  <AlertTriangle className="h-3.5 w-3.5 text-red-400 shrink-0" />
+                  <p className="text-xs text-red-300 font-medium">
+                    Click "Issue Certificate" again to confirm and create a new certificate.
+                  </p>
+                  <button
+                    onClick={() => setConfirmDuplicate(false)}
+                    className="ml-auto text-xs text-gray-500 hover:text-gray-300"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+
           {/* ── 3. Validity ── */}
           <div className="space-y-1.5">
             <Label className="text-gray-300 text-sm font-medium">Requested Validity</Label>
@@ -999,12 +1375,18 @@ function IssueDialog({ open, onClose, onIssued, requesterKeys, banks, onOpenGene
                     className={`${
                       bankBlock
                         ? "bg-gray-700 text-gray-500 cursor-not-allowed"
+                        : confirmDuplicate
+                        ? "bg-red-700 hover:bg-red-600 text-white"
                         : "bg-cyan-700 hover:bg-cyan-600 text-white"
                     }`}
                   >
-                    {issuing
-                      ? <><Loader2 className="h-4 w-4 mr-1.5 animate-spin" />Issuing…</>
-                      : <><ShieldCheck className="h-4 w-4 mr-1.5" />Issue Certificate</>}
+                    {issuing ? (
+                      <><Loader2 className="h-4 w-4 mr-1.5 animate-spin" />Issuing…</>
+                    ) : confirmDuplicate ? (
+                      <><AlertTriangle className="h-4 w-4 mr-1.5" />Confirm Issue Anyway</>
+                    ) : (
+                      <><ShieldCheck className="h-4 w-4 mr-1.5" />Issue Certificate</>
+                    )}
                   </Button>
                 </span>
               </TooltipTrigger>
@@ -1198,6 +1580,165 @@ function CertDetailDialog({ cert, fullCert, onClose, onDownload, onVerify }: {
   );
 }
 
+
+// ─── Requester Keys Panel ─────────────────────────────────────────────────────
+// Shown on the certificates page between the stat cards and the cert table.
+// Collapsible panel — each key row has View Detail + Revoke buttons.
+
+function RequesterKeysPanel({
+  keys,
+  onViewDetail,
+  onRevoke,
+}: {
+  keys: RequesterKey[];
+  onViewDetail: (key: RequesterKey) => void;
+  onRevoke:     (key: RequesterKey) => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+
+  if (keys.length === 0) return null;
+
+  const activeKeys   = keys.filter((k) => k.is_active);
+  const warnExpiring = activeKeys.some(
+    (k) => differenceInDays(k.expires_at * 1000, Date.now()) <= 30
+  );
+
+  return (
+    <div className="bg-gray-900/50 border border-gray-800 rounded-xl overflow-hidden">
+      {/* ── Collapsed header — always visible ── */}
+      <button
+        onClick={() => setExpanded((p) => !p)}
+        className="w-full flex items-center gap-3 px-4 py-2.5 hover:bg-gray-800/40 transition-colors text-left"
+      >
+        <Key className="h-4 w-4 text-violet-400 shrink-0" />
+        <p className="text-xs text-gray-400 flex-1">
+          <span className="text-white font-medium">{activeKeys.length}</span>
+          {" "}active requester key{activeKeys.length !== 1 ? "s" : ""}
+          {warnExpiring && (
+            <span className="ml-2 text-amber-400">⚠ Some expiring soon</span>
+          )}
+        </p>
+        {/* Pill summary of first 3 key names */}
+        <div className="flex items-center gap-1.5 mr-2">
+          {activeKeys.slice(0, 3).map((k) => {
+            const daysLeft = differenceInDays(k.expires_at * 1000, Date.now());
+            const pillColor =
+              daysLeft < 0   ? "border-red-800 text-red-400 bg-red-900/20"
+              : daysLeft <= 30 ? "border-amber-700 text-amber-400 bg-amber-900/10"
+              : "border-gray-700 text-gray-300 bg-gray-800";
+            return (
+              <span
+                key={k.id}
+                className={`text-xs border px-2 py-0.5 rounded-full ${pillColor}`}
+              >
+                {k.key_name}
+              </span>
+            );
+          })}
+          {activeKeys.length > 3 && (
+            <span className="text-xs text-gray-600">+{activeKeys.length - 3}</span>
+          )}
+        </div>
+        <ChevronDown
+          className={`h-4 w-4 text-gray-500 shrink-0 transition-transform duration-200 ${
+            expanded ? "rotate-180" : ""
+          }`}
+        />
+      </button>
+
+      {/* ── Expanded rows ── */}
+      {expanded && (
+        <div className="border-t border-gray-800">
+          {keys.map((k) => {
+            const daysLeft = differenceInDays(k.expires_at * 1000, Date.now());
+            const expiryColor =
+              daysLeft < 0    ? "text-red-400"
+              : daysLeft <= 30 ? "text-amber-400"
+              : "text-gray-500";
+
+            return (
+              <div
+                key={k.id}
+                className="flex items-center gap-3 px-4 py-2.5 border-b border-gray-800/60 last:border-0 hover:bg-gray-800/20 transition-colors"
+              >
+                {/* Status dot */}
+                <div className={`h-2 w-2 rounded-full shrink-0 ${
+                  k.is_active ? "bg-emerald-400" : "bg-gray-600"
+                }`} />
+
+                {/* Name + org */}
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm text-white font-medium truncate">{k.key_name}</p>
+                  <p className="text-xs text-gray-500 truncate">{k.organization} · {k.key_type}-{k.key_size}</p>
+                </div>
+
+                {/* Fingerprint */}
+                <p className="text-xs font-mono text-gray-600 hidden sm:block truncate max-w-[140px]">
+                  {k.fingerprint}
+                </p>
+
+                {/* Expiry */}
+                <p className={`text-xs shrink-0 ${expiryColor}`}>
+                  {k.expires_at
+                    ? daysLeft < 0
+                      ? `Expired ${Math.abs(daysLeft)}d ago`
+                      : `${daysLeft}d left`
+                    : "—"}
+                </p>
+
+                {/* Status badge */}
+                <span className={`text-xs px-2 py-0.5 rounded-full border shrink-0 ${
+                  k.is_active
+                    ? "bg-emerald-900/30 border-emerald-800 text-emerald-300"
+                    : "bg-gray-800 border-gray-700 text-gray-500"
+                }`}>
+                  {k.is_active ? "Active" : "Revoked"}
+                </span>
+
+                {/* Actions */}
+                <div className="flex items-center gap-1 shrink-0">
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-7 w-7 text-gray-500 hover:text-violet-400"
+                        onClick={() => onViewDetail(k)}
+                      >
+                        <Eye className="h-3.5 w-3.5" />
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent className="bg-gray-800 border-gray-700 text-xs">
+                      View key details
+                    </TooltipContent>
+                  </Tooltip>
+
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-7 w-7 text-gray-600 hover:text-red-400 disabled:opacity-30"
+                        disabled={!k.is_active}
+                        onClick={() => k.is_active && onRevoke(k)}
+                      >
+                        <ShieldX className="h-3.5 w-3.5" />
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent className="bg-gray-800 border-gray-700 text-xs">
+                      {k.is_active ? "Revoke key" : "Already revoked"}
+                    </TooltipContent>
+                  </Tooltip>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Main Page ────────────────────────────────────────────────────────────────
 
 export default function CertificatesPage() {
@@ -1219,6 +1760,9 @@ export default function CertificatesPage() {
   const [verifyJson,      setVerifyJson]      = useState<string | undefined>(undefined);
   const [selected,        setSelected]        = useState<Certificate | null>(null);
   const [fullCert,        setFullCert]        = useState<FullCertificate | null>(null);
+  // Key detail + revoke dialogs
+  const [viewKeyId,       setViewKeyId]       = useState<string | null>(null);
+  const [revokeKey,       setRevokeKey]       = useState<RequesterKey | null>(null);
 
   // Fetch certs
   const fetchCerts = useCallback(async () => {
@@ -1286,7 +1830,6 @@ export default function CertificatesPage() {
       status:               cert.status,
       key_type:             cert.key_type,
       issuer:               cert.issuer_id,
-      // Store full verify-required fields
       issuer_public_key:    cert.issuer_public_key,
       signature:            cert.signature,
       signed_at:            cert.signed_at,
@@ -1295,12 +1838,34 @@ export default function CertificatesPage() {
       requester_public_key: cert.requester_public_key,
       kyc_summary:          cert.kyc_summary,
     };
-    setCerts((prev) => [row, ...prev]);
-    setSelected(row); setFullCert(cert);
+
+    setCerts((prev) => {
+      // Replace existing cert for same customer+requester (DB upsert behavior),
+      // otherwise prepend as a new entry
+      const idx = prev.findIndex(
+        (c) => c.customer_id === row.customer_id && c.requester_id === row.requester_id
+      );
+      if (idx !== -1) {
+        const updated = [...prev];
+        updated[idx] = row;
+        return updated;
+      }
+      return [row, ...prev];
+    });
+
+    setSelected(row);
+    setFullCert(cert);
   };
 
   const handleKeyGenerated = (key: RequesterKey) => {
     setRequesterKeys((prev) => [key, ...prev]);
+  };
+
+  const handleKeyRevoked = (keyId: string) => {
+    // Mark revoked in local list — no refetch needed
+    setRequesterKeys((prev) =>
+      prev.map((k) => k.id === keyId ? { ...k, is_active: false } : k)
+    );
   };
 
   const downloadCert = (cert: Certificate) => {
@@ -1401,28 +1966,12 @@ export default function CertificatesPage() {
           <StatCard label="Expired/Grace" value={stats.expired}  icon={XCircle}       accent="bg-red-500/10 text-red-400" />
         </div>
 
-        {/* ── Requester keys summary ── */}
-        {requesterKeys.length > 0 && (
-          <div className="flex items-center gap-3 bg-gray-900/50 border border-gray-800 rounded-xl px-4 py-2.5">
-            <Key className="h-4 w-4 text-violet-400 shrink-0" />
-            <p className="text-xs text-gray-400">
-              <span className="text-white font-medium">{requesterKeys.filter((k) => k.is_active).length}</span> active requester key{requesterKeys.filter((k) => k.is_active).length !== 1 ? "s" : ""}
-              {requesterKeys.some((k) => k.is_active && differenceInDays(k.expires_at * 1000, Date.now()) <= 30) && (
-                <span className="ml-2 text-amber-400">⚠ Some keys expiring soon</span>
-              )}
-            </p>
-            <div className="ml-auto flex gap-1.5">
-              {requesterKeys.filter((k) => k.is_active).slice(0, 3).map((k) => (
-                <span key={k.id} className="text-xs bg-gray-800 border border-gray-700 text-gray-300 px-2 py-0.5 rounded-full">
-                  {k.key_name}
-                </span>
-              ))}
-              {requesterKeys.filter((k) => k.is_active).length > 3 && (
-                <span className="text-xs text-gray-600">+{requesterKeys.filter((k) => k.is_active).length - 3} more</span>
-              )}
-            </div>
-          </div>
-        )}
+        {/* ── Requester Keys panel ── */}
+        <RequesterKeysPanel
+          keys={requesterKeys}
+          onViewDetail={(key) => setViewKeyId(key.id)}
+          onRevoke={(key)     => setRevokeKey(key)}
+        />
 
         {/* ── Table ── */}
         <Card className="bg-gray-900 border-gray-800">
@@ -1592,6 +2141,18 @@ export default function CertificatesPage() {
         onClose={() => setShowGenerateKey(false)}
         banks={banks}
         onGenerated={handleKeyGenerated}
+        onViewDetail={(key) => { setShowGenerateKey(false); setViewKeyId(key.id); }}
+        onRevoke={(key)     => { setShowGenerateKey(false); setRevokeKey(key);   }}
+      />
+      <KeyDetailDialog
+        keyId={viewKeyId}
+        onClose={() => setViewKeyId(null)}
+        onRevoke={(key) => { setViewKeyId(null); setRevokeKey(key); }}
+      />
+      <RevokeConfirmDialog
+        keyToRevoke={revokeKey}
+        onClose={() => setRevokeKey(null)}
+        onRevoked={handleKeyRevoked}
       />
       <IssueDialog
         open={showIssue}
