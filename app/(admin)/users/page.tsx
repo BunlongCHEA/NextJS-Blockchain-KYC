@@ -33,6 +33,7 @@ const ROLE_COLORS: Record<string, string> = {
   bank_admin:   "bg-purple-900 text-purple-300",
   bank_officer: "bg-blue-900 text-blue-300",
   auditor:      "bg-green-900 text-green-300",
+  integration_service: "bg-cyan-900 text-cyan-300",
   customer:     "bg-gray-700 text-gray-300",
 };
 
@@ -40,10 +41,11 @@ const ALL_ROLES: { value: string; label: string }[] = [
   { value: "bank_officer", label: "Bank Officer" },
   { value: "bank_admin",   label: "Bank Admin"   },
   { value: "auditor",      label: "Auditor"       },
+  { value: "integration_service", label: "Integration Service" },
   { value: "admin",        label: "Admin"         },
 ];
 
-const INTERNAL_ROLES = ["bank_admin", "bank_officer", "auditor"] as const;
+const INTERNAL_ROLES = ["bank_admin", "bank_officer", "auditor", "integration_service"] as const;
 type InternalRole = typeof INTERNAL_ROLES[number];
 
 // ─── Add User Dialog ─────────────────────────────────────────────────────────
@@ -97,8 +99,11 @@ function AddUserDialog({
       <DialogHeader>
         <DialogTitle className="text-white">Add Internal User</DialogTitle>
         <DialogDescription className="text-gray-400">
-          Create a bank_admin, bank_officer, or auditor account.
-          The user must change their password on first login.
+          Create a bank_admin, bank_officer, auditor account, or integration_service account.
+          The user must change their password on first login.{" "}
+          <span className="text-cyan-400">
+            integration_service accounts are used by the NextJS gateway — no bank required.
+          </span>
         </DialogDescription>
       </DialogHeader>
       <form onSubmit={handleSubmit} className="space-y-4 mt-2">
@@ -140,6 +145,7 @@ function AddUserDialog({
               <SelectItem value="bank_admin">Bank Admin</SelectItem>
               <SelectItem value="bank_officer">Bank Officer</SelectItem>
               <SelectItem value="auditor">Auditor</SelectItem>
+              <SelectItem value="integration_service">Integration Service</SelectItem>
             </SelectContent>
           </Select>
         </div>

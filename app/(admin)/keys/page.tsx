@@ -121,7 +121,7 @@ const STORAGE_KEY = "int_api_keys_v1";
 
 async function syncToServer(keys: IntegrationKey[]): Promise<void> {
   try {
-    await fetch("/api/integration/_sync", {
+    await fetch("/api/integration/sync", {
       method:  "POST",
       headers: { "Content-Type": "application/json" },
       body:    JSON.stringify({ keys }),
@@ -586,6 +586,18 @@ export default function KeysPage() {
   }, []);
 
   useEffect(() => { fetchIntKeys(); }, [fetchIntKeys]);
+
+  // ── Auto-sync localStorage → server on page load ──────────────────────────
+  // This creates/updates .int_keys_store.json so the gateway route can
+  // validate keys. Runs once when admin visits the Keys page.
+  useEffect(() => {
+    const keys = loadKeys();
+    if (keys.length > 0) {
+      syncToServer(keys).then(() => {
+        console.log("[keys] synced", keys.length, "key(s) to server store");
+      });
+    }
+  }, []); // ← empty deps = runs once on mount only
 
   // ── Auto-refresh timer ────────────────────────────────────────────────────
   useEffect(() => {

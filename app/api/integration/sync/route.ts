@@ -7,7 +7,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
-import { writeServerKeys } from "../_lib/gateway";
+import { writeServerKeys, readServerKeys } from "../lib/gateway";
 
 export async function POST(req: NextRequest) {
   const session = await auth();
@@ -40,7 +40,6 @@ export async function GET() {
   }
 
   try {
-    const { readServerKeys } = await import("../_lib/gateway");
     const keys = readServerKeys();
     return NextResponse.json({ success: true, count: keys.length, keys });
   } catch {

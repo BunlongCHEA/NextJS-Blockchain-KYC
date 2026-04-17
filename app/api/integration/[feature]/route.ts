@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { gatewayHandler, Feature } from "../_lib/gateway";
+import { gatewayHandler, Feature } from "../lib/gateway";
 
 const VALID_FEATURES: Feature[] = [
   "kyc", "users", "blockchain", "banks", "certificates", "audit",
