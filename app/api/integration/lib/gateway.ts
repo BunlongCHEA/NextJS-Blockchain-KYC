@@ -1,67 +1,27 @@
 /**
+ * app/api/integration/lib/gateway.ts
+ * ────────────────────────────────────
  * Integration Gateway — shared middleware for /api/integration/<feature>
+ *
+ * CHANGED: key store is now PostgreSQL (via ./db.ts) instead of a JSON file.
+ * Everything else (auth flow, proxy logic, scope checks) is unchanged.
  *
  * Flow:
  *  1. Extract  Authorization: Bearer <raw_key>
- *  2. SHA-256 hash it → look up in localStorage-persisted keys (via cookie/header fallback)
- *     NOTE: localStorage is browser-only. On the server we read from the
- *     X-Int-Keys-Store header OR a server-side KV (file-based fallback for simplicity).
+ *  2. SHA-256 hash → findKeyByHash() from Postgres
  *  3. Validate: is_active, !is_deleted, scope allowed, not expired
- *  4. Increment request_count + scope_counts
- *  5. Proxy to Go backend with the system service JWT from INTEGRATION_SERVICE_TOKEN env
+ *  4. incrementStats() — one UPDATE in Postgres (non-blocking)
+ *  5. Proxy to Go using service account JWT (auto-refreshed)
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { readFileSync, writeFileSync, existsSync } from "fs";
-import { join } from "path";
+import {
+  findKeyByHash,
+  incrementStats,
+  type Scope,
+} from "./db";
 
-// ─── Types (mirror keys/page.tsx) ─────────────────────────────────────────────
-
-type Scope =
-  | "kyc:read"    | "kyc:write"   | "kyc:verify"
-  | "users:read"  | "users:write"
-  | "blockchain:read" | "blockchain:mine"
-  | "banks:read"  | "banks:write"
-  | "certificates:issue" | "certificates:verify"
-  | "audit:read";
-
-interface IntegrationKey {
-  id:                  string;
-  name:                string;
-  description:         string;
-  organization:        string;
-  key_prefix:          string;
-  key_hash:            string;
-  is_active:           boolean;
-  is_deleted:          boolean;
-  scopes:              Scope[];
-  created_at:          number;
-  expires_at:          number;
-  last_used_at:        number;
-  request_count:       number;
-  request_count_today: number;
-  scope_counts:        Partial<Record<Scope, number>>;
-  scope_counts_today:  Partial<Record<Scope, number>>;
-}
-
-// ─── Server-side key store (JSON file — persists across requests) ─────────────
-// Path: <project_root>/.int_keys_store.json
-// The browser's localStorage is synced here via POST /api/integration/_sync
-
-const STORE_PATH = join(process.cwd(), ".int_keys_store.json");
-
-export function readServerKeys(): IntegrationKey[] {
-  try {
-    if (!existsSync(STORE_PATH)) return [];
-    return JSON.parse(readFileSync(STORE_PATH, "utf-8")) as IntegrationKey[];
-  } catch { return []; }
-}
-
-export function writeServerKeys(keys: IntegrationKey[]): void {
-  writeFileSync(STORE_PATH, JSON.stringify(keys, null, 2), "utf-8");
-}
-
-// ─── SHA-256 (server-side Web Crypto) ─────────────────────────────────────────
+// ─── SHA-256 (server-side Web Crypto) ────────────────────────────────────────
 
 async function sha256hex(text: string): Promise<string> {
   const buf = await crypto.subtle.digest(
@@ -73,209 +33,146 @@ async function sha256hex(text: string): Promise<string> {
     .join("");
 }
 
-// ─── Service token — cached in memory, auto-refreshed on expiry ───────────────
+// ─── Service token — cached in memory, auto-refreshed on expiry ──────────────
 
 let _cachedToken: string | null = null;
 let _tokenExpiresAt = 0;
 
 async function getServiceToken(): Promise<string> {
-  // Return cached token if still valid (with 60s buffer)
   if (_cachedToken && Date.now() < _tokenExpiresAt - 60_000) {
     return _cachedToken;
   }
 
-  // Option A: static token from env (no expiry management)
   const staticToken = process.env.INTEGRATION_SERVICE_TOKEN;
   if (staticToken && !staticToken.startsWith("eyJ")) {
-    // Not a JWT — treat as API key, return as-is
-    _cachedToken = staticToken;
-    _tokenExpiresAt = Date.now() + 24 * 3600_000;
+    _cachedToken    = staticToken;
+    _tokenExpiresAt = Date.now() + 24 * 3_600_000;
     return staticToken;
   }
 
-  // Option B: auto-login with service account credentials
   const username = process.env.INTEGRATION_SERVICE_USER;
   const password = process.env.INTEGRATION_SERVICE_PASS;
   const goBase   = process.env.API_URL ?? process.env.NEXT_PUBLIC_API_URL ?? "";
 
-  // ── DEBUG: log exactly what we're using ──────────────────────────────────
   console.log("[gateway] getServiceToken()");
-  console.log("[gateway]   API_URL          =", process.env.API_URL);
-  console.log("[gateway]   NEXT_PUBLIC_URL  =", process.env.NEXT_PUBLIC_API_URL);
-  console.log("[gateway]   goBase resolved  =", goBase);
-  console.log("[gateway]   SVC_USER         =", username ?? "(not set)");
-  console.log("[gateway]   SVC_PASS set?    =", !!password);
+  console.log("[gateway]   goBase    =", goBase);
+  console.log("[gateway]   SVC_USER  =", username ?? "(not set)");
+  console.log("[gateway]   SVC_PASS  =", password ? "set" : "(not set)");
 
   if (!username || !password) {
-    // Fallback to static token
     if (staticToken) {
-      _cachedToken = staticToken;
-      _tokenExpiresAt = Date.now() + 3600_000;
+      _cachedToken    = staticToken;
+      _tokenExpiresAt = Date.now() + 3_600_000;
       return staticToken;
     }
-    throw new Error("INTEGRATION_SERVICE_TOKEN or INTEGRATION_SERVICE_USER/PASS required");
+    throw new Error(
+      "INTEGRATION_SERVICE_TOKEN or INTEGRATION_SERVICE_USER/PASS required"
+    );
   }
 
-  if (!goBase) {
-    throw new Error("Missing API_URL or NEXT_PUBLIC_API_URL in .env.local");
-  }
+  if (!goBase) throw new Error("Missing API_URL or NEXT_PUBLIC_API_URL in .env.local");
 
   const loginURL = `${goBase}/api/v1/auth/login`;
-  console.log("[gateway]   login URL        =", loginURL);
-
   const res = await fetch(loginURL, {
     method:  "POST",
     headers: { "Content-Type": "application/json" },
     body:    JSON.stringify({ username, password }),
   });
 
-  // if (!res.ok) throw new Error(`Service account login failed: ${res.status}`);
-
-  // ── Log the raw Go response ───────────────────────────────────────────────
   const raw = await res.text();
-  console.log("[gateway]   login status     =", res.status);
-  console.log("[gateway]   login response   =", raw);
+  console.log("[gateway]   login status =", res.status);
+  if (!res.ok) throw new Error(`Service account login failed: ${res.status} — ${raw}`);
 
-  if (!res.ok) {
-    throw new Error(
-      `Service account login failed: ${res.status} — ${raw}`,
-    );
-  }
-
-  // const data = await res.json();
-  const data = JSON.parse(raw);
-  const token = data?.data?.access_token;
+  const data       = JSON.parse(raw);
+  const token      = data?.data?.access_token;
   if (!token) throw new Error("No access_token in login response");
 
   _cachedToken    = token;
-  // Go JWT expires_in is in seconds — default 86400 (24h)
-  const expiresIn = (data?.data?.expires_in ?? 86400) * 1000;
+  const expiresIn = (data?.data?.expires_in ?? 86_400) * 1000;
   _tokenExpiresAt = Date.now() + expiresIn;
 
   console.log("[gateway]   token cached, expires in", expiresIn / 1000, "s");
   return token;
 }
 
-// ─── Feature → Go API mapping ─────────────────────────────────────────────────
+// ─── Feature → Go API mapping ────────────────────────────────────────────────
 
 export type Feature =
   | "kyc" | "users" | "blockchain" | "banks" | "certificates" | "audit";
 
 interface RouteMap {
-  // action → { method, path }
   [action: string]: { method: string; path: string };
 }
 
 const FEATURE_MAP: Record<Feature, RouteMap> = {
   kyc: {
-    list:         { method: "GET",  path: "/api/v1/kyc/list"    },
-    get:          { method: "GET",  path: "/api/v1/kyc"         },
-    create:       { method: "POST", path: "/api/v1/kyc"         },
-    update:       { method: "PUT",  path: "/api/v1/kyc"         },
-    verify:       { method: "POST", path: "/api/v1/kyc/verify"  },
-    reject:       { method: "POST", path: "/api/v1/kyc/reject"  },
-    stats:        { method: "GET",  path: "/api/v1/kyc/stats"   },
-    history:      { method: "GET",  path: "/api/v1/kyc/history" },
+    list:    { method: "GET",  path: "/api/v1/kyc/list"    },
+    get:     { method: "GET",  path: "/api/v1/kyc"         },
+    create:  { method: "POST", path: "/api/v1/kyc"         },
+    update:  { method: "PUT",  path: "/api/v1/kyc"         },
+    verify:  { method: "POST", path: "/api/v1/kyc/verify"  },
+    reject:  { method: "POST", path: "/api/v1/kyc/reject"  },
+    stats:   { method: "GET",  path: "/api/v1/kyc/stats"   },
+    history: { method: "GET",  path: "/api/v1/kyc/history" },
   },
   users: {
-    list:         { method: "GET",    path: "/api/v1/users/list"           },
-    create:       { method: "POST",   path: "/api/v1/users"                },
-    update:       { method: "PATCH",  path: "/api/v1/users"                },
-    delete:       { method: "DELETE", path: "/api/v1/users"                },
-    reset_password: { method: "POST", path: "/api/v1/users/reset-password" },
+    list:           { method: "GET",    path: "/api/v1/users/list"           },
+    create:         { method: "POST",   path: "/api/v1/users"                },
+    update:         { method: "PATCH",  path: "/api/v1/users"                },
+    delete:         { method: "DELETE", path: "/api/v1/users"                },
+    reset_password: { method: "POST",   path: "/api/v1/users/reset-password" },
   },
   blockchain: {
-    stats:        { method: "GET",  path: "/api/v1/blockchain/stats"    },
-    blocks:       { method: "GET",  path: "/api/v1/blockchain/blocks"   },
-    block:        { method: "GET",  path: "/api/v1/blockchain/block"    },
-    pending:      { method: "GET",  path: "/api/v1/blockchain/pending"  },
-    validate:     { method: "GET",  path: "/api/v1/blockchain/validate" },
-    mine:         { method: "POST", path: "/api/v1/blockchain/mine"     },
+    stats:    { method: "GET",  path: "/api/v1/blockchain/stats"    },
+    blocks:   { method: "GET",  path: "/api/v1/blockchain/blocks"   },
+    block:    { method: "GET",  path: "/api/v1/blockchain/block"    },
+    pending:  { method: "GET",  path: "/api/v1/blockchain/pending"  },
+    validate: { method: "GET",  path: "/api/v1/blockchain/validate" },
+    mine:     { method: "POST", path: "/api/v1/blockchain/mine"     },
   },
   banks: {
-    list:         { method: "GET",  path: "/api/v1/banks/list" },
-    get:          { method: "GET",  path: "/api/v1/banks"      },
-    create:       { method: "POST", path: "/api/v1/banks"      },
+    list:   { method: "GET",  path: "/api/v1/banks/list" },
+    get:    { method: "GET",  path: "/api/v1/banks"      },
+    create: { method: "POST", path: "/api/v1/banks"      },
   },
   certificates: {
-    list:         { method: "GET",  path: "/api/v1/certificates/list"  },
-    issue:        { method: "POST", path: "/api/v1/certificate/issue"  },
-    verify:       { method: "POST", path: "/api/v1/certificate/verify" },
+    list:   { method: "GET",  path: "/api/v1/certificates/list"  },
+    issue:  { method: "POST", path: "/api/v1/certificate/issue"  },
+    verify: { method: "POST", path: "/api/v1/certificate/verify" },
   },
   audit: {
-    logs:         { method: "GET", path: "/api/v1/audit/logs"      },
-    alerts:       { method: "GET", path: "/api/v1/security/alerts" },
+    logs:   { method: "GET", path: "/api/v1/audit/logs"      },
+    alerts: { method: "GET", path: "/api/v1/security/alerts" },
   },
 };
 
-// ─── Scope required per feature+action ────────────────────────────────────────
+// ─── Required scope per feature + action ────────────────────────────────────
 
 function requiredScope(feature: Feature, action: string): Scope | null {
-  const writeActions = ["create", "update", "delete", "reset_password"];
-  const verifyActions = ["verify", "reject", "auto_verify"];
-  const mineActions = ["mine"];
-  const issueActions = ["issue"];
-  const certVerifyActions = ["verify"]; // certificates feature
-
+  const write  = ["create", "update", "delete", "reset_password"];
+  const verify = ["verify", "reject", "auto_verify"];
   if (feature === "kyc") {
-    if (verifyActions.includes(action)) return "kyc:verify";
-    if (writeActions.includes(action)) return "kyc:write";
+    if (verify.includes(action)) return "kyc:verify";
+    if (write.includes(action))  return "kyc:write";
     return "kyc:read";
   }
   if (feature === "users") {
-    if (writeActions.includes(action)) return "users:write";
-    return "users:read";
+    return write.includes(action) ? "users:write" : "users:read";
   }
   if (feature === "blockchain") {
-    if (mineActions.includes(action)) return "blockchain:mine";
-    return "blockchain:read";
+    return action === "mine" ? "blockchain:mine" : "blockchain:read";
   }
   if (feature === "banks") {
-    if (writeActions.includes(action)) return "banks:write";
-    return "banks:read";
+    return write.includes(action) ? "banks:write" : "banks:read";
   }
   if (feature === "certificates") {
-    if (issueActions.includes(action)) return "certificates:issue";
-    if (certVerifyActions.includes(action)) return "certificates:verify";
-    return "certificates:verify";
+    return action === "issue" ? "certificates:issue" : "certificates:verify";
   }
   if (feature === "audit") return "audit:read";
   return null;
 }
 
-// ─── Update stats in store ────────────────────────────────────────────────────
-
-function updateStats(keyId: string, scope: Scope): void {
-  try {
-    const keys = readServerKeys();
-    const idx  = keys.findIndex((k) => k.id === keyId);
-    if (idx === -1) return;
-
-    const k = keys[idx];
-    const today = new Date().toDateString();
-
-    // Reset today counter if it's a new day (we store the date in a sidecar field)
-    const storedDate = (k as any)._today_date as string | undefined;
-    if (storedDate !== today) {
-      k.request_count_today = 0;
-      k.scope_counts_today  = {};
-      (k as any)._today_date = today;
-    }
-
-    k.request_count++;
-    k.request_count_today++;
-    k.last_used_at = Date.now();
-    k.scope_counts[scope]       = (k.scope_counts[scope]       ?? 0) + 1;
-    k.scope_counts_today[scope] = (k.scope_counts_today[scope] ?? 0) + 1;
-
-    keys[idx] = k;
-    writeServerKeys(keys);
-  } catch {
-    // Non-fatal — don't fail the proxy because of stats
-  }
-}
-
-// ─── Main gateway handler ───────────────────────────────────────��─────────────
+// ─── Main gateway handler ────────────────────────────────────────────────────
 
 export async function gatewayHandler(
   req: NextRequest,
@@ -283,7 +180,9 @@ export async function gatewayHandler(
 ): Promise<NextResponse> {
   // 1. Extract raw key
   const authHeader = req.headers.get("authorization") ?? "";
-  const rawKey = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : "";
+  const rawKey = authHeader.startsWith("Bearer ")
+    ? authHeader.slice(7).trim()
+    : "";
 
   if (!rawKey) {
     return NextResponse.json(
@@ -292,10 +191,9 @@ export async function gatewayHandler(
     );
   }
 
-  // 2. Hash + look up
+  // 2. Hash → Postgres lookup  (replaces file-based readServerKeys)
   const hash = await sha256hex(rawKey);
-  const keys = readServerKeys();
-  const key  = keys.find((k) => k.key_hash === hash);
+  const key  = await findKeyByHash(hash);
 
   if (!key) {
     return NextResponse.json(
@@ -304,7 +202,7 @@ export async function gatewayHandler(
     );
   }
 
-  // 3. Validate key status
+  // 3. Validate
   if (key.is_deleted) {
     return NextResponse.json(
       { success: false, error: "API key has been deleted" },
@@ -342,7 +240,9 @@ export async function gatewayHandler(
       {
         success: false,
         error:   "Missing required field: action",
-        hint:    `Available actions for '${feature}': ${Object.keys(FEATURE_MAP[feature] ?? {}).join(", ")}`,
+        hint:    `Available actions for '${feature}': ${
+          Object.keys(FEATURE_MAP[feature] ?? {}).join(", ")
+        }`,
       },
       { status: 400 },
     );
@@ -360,15 +260,15 @@ export async function gatewayHandler(
   if (!route) {
     return NextResponse.json(
       {
-        success: false,
-        error:   `Unknown action '${action}' for feature '${feature}'`,
+        success:   false,
+        error:     `Unknown action '${action}' for feature '${feature}'`,
         available: Object.keys(featureRoutes),
       },
       { status: 400 },
     );
   }
 
-  // 6. Check scope
+  // 6. Scope check
   const needed = requiredScope(feature, action);
   if (needed && !key.scopes.includes(needed)) {
     return NextResponse.json(
@@ -381,9 +281,9 @@ export async function gatewayHandler(
     );
   }
 
-  // 7. Build Go request
+  // 7. Build Go URL + service token
   const goBase  = process.env.API_URL ?? process.env.NEXT_PUBLIC_API_URL ?? "";
-  const params  = (body.params as Record<string, string>) ?? {};
+  const params  = (body.params  as Record<string, string>) ?? {};
   const payload = body.data ?? body.payload ?? null;
 
   const url = new URL(route.path, goBase);
@@ -392,7 +292,7 @@ export async function gatewayHandler(
   const serviceToken = await getServiceToken();
   if (!serviceToken) {
     return NextResponse.json(
-      { success: false, error: "Server misconfiguration: INTEGRATION_SERVICE_TOKEN not set" },
+      { success: false, error: "Server misconfiguration: service token unavailable" },
       { status: 500 },
     );
   }
@@ -412,17 +312,21 @@ export async function gatewayHandler(
 
     const responseData = await goRes.json().catch(() => ({}));
 
-    // 9. Update stats (non-blocking)
-    if (needed) updateStats(key.id, needed);
+    // 9. Increment stats in Postgres — non-blocking (don't await)
+    if (needed) {
+      incrementStats(key.id, needed).catch((err) =>
+        console.error("[gateway] stats update failed:", err.message)
+      );
+    }
 
     return NextResponse.json(
       {
         ...responseData,
         _gateway: {
-          key_name:  key.name,
+          key_name:   key.name,
           feature,
           action,
-          scope:     needed,
+          scope:      needed,
           proxied_by: "nextjs-integration-gateway",
         },
       },

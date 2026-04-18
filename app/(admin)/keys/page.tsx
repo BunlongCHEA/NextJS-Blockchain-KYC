@@ -4,6 +4,10 @@
  * Keys Management — /app/(admin)/keys/page.tsx
  * ─────────────────────────────────────────────
  * Integration API Keys  (Next.js middleware layer)
+ *
+ * Storage: PostgreSQL via /api/integration/sync
+ * Every mutation calls apiSyncKeys() → POST /api/integration/sync → DB upsert.
+ * Page load calls apiLoadKeys()     → GET  /api/integration/sync → DB read.
  */
 
 import { useEffect, useState, useCallback, useRef } from "react";
@@ -72,9 +76,6 @@ const SCOPE_DEFS: ScopeDef[] = [
   { id: "audit:read",          label: "Audit Logs",         icon: BarChart3,    group: "Audit",        color: "text-gray-400"    },
 ];
 
-// ─── Scope → which NextJS gateway route it calls ──────────────────────────────
-// Used in the "Service Account" info panel
-
 const SCOPE_TO_NEXTJS_ROUTES: Record<Scope, string[]> = {
   "kyc:read":            ["POST /api/integration/kyc  {action:list|get|stats|history}"],
   "kyc:write":           ["POST /api/integration/kyc  {action:create|update}"],
@@ -89,10 +90,6 @@ const SCOPE_TO_NEXTJS_ROUTES: Record<Scope, string[]> = {
   "certificates:verify": ["POST /api/integration/certificates  {action:verify|list}"],
   "audit:read":          ["POST /api/integration/audit  {action:logs|alerts}"],
 };
-
-// ─── Go role → scopes it can cover ───────────────────────────────────────────
-// Maps Go RBAC roles to the gateway scopes they satisfy.
-// Used to validate whether the configured service account covers all key scopes.
 
 const GO_ROLE_SCOPES: Record<string, Scope[]> = {
   integration_service: [
@@ -161,18 +158,23 @@ interface IntegrationKey {
   scope_counts_today:  Partial<Record<Scope, number>>;
 }
 
-const STORAGE_KEY = "int_api_keys_v1";
+// ─── API helpers — Postgres via /api/integration/sync ────────────────────────
 
-// ─── Sync ─────────────────────────────────────────────────────────────────────
-
-async function syncToServer(keys: IntegrationKey[]): Promise<void> {
+async function apiLoadKeys(): Promise<IntegrationKey[]> {
   try {
-    await fetch("/api/integration/sync", {
-      method:  "POST",
-      headers: { "Content-Type": "application/json" },
-      body:    JSON.stringify({ keys }),
-    });
-  } catch { /* non-fatal */ }
+    const res = await fetch("/api/integration/sync");
+    if (!res.ok) return [];
+    const data = await res.json();
+    return (data.keys ?? []) as IntegrationKey[];
+  } catch { return []; }
+}
+
+async function apiSyncKeys(keys: IntegrationKey[]): Promise<void> {
+  await fetch("/api/integration/sync", {
+    method:  "POST",
+    headers: { "Content-Type": "application/json" },
+    body:    JSON.stringify({ keys }),
+  });
 }
 
 // ─── Crypto ───────────────────────────────────────────────────────────────────
@@ -188,47 +190,23 @@ async function sha256hex(text: string): Promise<string> {
   return Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-// ─── Storage ──────────────────────────────────────────────────────────────────
-
-function loadKeys(): IntegrationKey[] {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw) as IntegrationKey[];
-    return parsed.map((k) => ({
-      ...k,
-      scope_counts:       k.scope_counts       ?? {},
-      scope_counts_today: k.scope_counts_today ?? {},
-    }));
-  } catch { return []; }
-}
-
-function persistKeys(keys: IntegrationKey[]): void {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(keys));
-}
-
-// ─── Service Account Status ───────────────────────────────────────────────────
-// Checks whether the env-configured service account covers all scopes of a key.
+// ─── Service Account Coverage ─────────────────────────────────────────────────
 
 interface SvcAccountStatus {
-  username:       string;
-  role:           string;
-  configured:     boolean;
-  coveredScopes:  Scope[];
-  missingScopes:  Scope[];
-  allCovered:     boolean;
+  username:      string;
+  role:          string;
+  configured:    boolean;
+  coveredScopes: Scope[];
+  missingScopes: Scope[];
+  allCovered:    boolean;
 }
 
 function checkServiceAccountCoverage(keyScopes: Scope[]): SvcAccountStatus {
-  // We read the username from env — not available client-side.
-  // Use a fixed label; role comes from a server-side ping (below).
-  // For the UI we always show "integration_service" as the recommended role.
-  const username  = process.env.NEXT_PUBLIC_SVC_USER ?? "nextjs-integration-svc";
-  // We assume integration_service role (most permissive non-admin)
-  const role      = "integration_service";
+  const username   = process.env.NEXT_PUBLIC_SVC_USER ?? "nextjs-integration-svc";
+  const role       = "integration_service";
   const roleScopes = GO_ROLE_SCOPES[role] ?? [];
-  const covered   = keyScopes.filter((s) => roleScopes.includes(s));
-  const missing   = keyScopes.filter((s) => !roleScopes.includes(s));
+  const covered    = keyScopes.filter((s) => roleScopes.includes(s));
+  const missing    = keyScopes.filter((s) => !roleScopes.includes(s));
   return {
     username,
     role,
@@ -302,7 +280,7 @@ function ScopePicker({ value, onChange }: { value: Scope[]; onChange: (s: Scope[
   );
 }
 
-// ─── Service Account Detail Dialog ───────────────────────────────────────────
+// ─── Service Account Dialog ───────────────────────────────────────────────────
 
 function ServiceAccountDialog({
   integrationKey, onClose,
@@ -310,15 +288,7 @@ function ServiceAccountDialog({
   integrationKey: IntegrationKey;
   onClose: () => void;
 }) {
-  const svc = checkServiceAccountCoverage(integrationKey.scopes);
-
-  // Build the Postman samples for this key's scopes
-  const samples = integrationKey.scopes.map((scope) => ({
-    scope,
-    routes: SCOPE_TO_NEXTJS_ROUTES[scope] ?? [],
-  }));
-
-  // Group scopes by feature for the coverage table
+  const svc    = checkServiceAccountCoverage(integrationKey.scopes);
   const groups = SCOPE_DEFS.reduce<Record<string, ScopeDef[]>>((acc, d) => {
     (acc[d.group] ??= []).push(d);
     return acc;
@@ -332,8 +302,8 @@ function ServiceAccountDialog({
             <User className="h-4 w-4 text-cyan-400" />
             Service Account — <span className="text-cyan-400 font-mono">{integrationKey.name}</span>
           </DialogTitle>
-          <DialogDescription className="text-gray-500 text-xs">
-            Which Go service account powers this key, which scopes it covers, and sample Postman requests.
+          <DialogDescription className="text-xs text-gray-500">
+            Which Go service account powers this key, scope coverage, and sample requests.
           </DialogDescription>
         </DialogHeader>
 
@@ -343,7 +313,7 @@ function ServiceAccountDialog({
           <div className={`rounded-lg border px-4 py-3 ${svc.allCovered ? "bg-emerald-950/30 border-emerald-800/40" : "bg-amber-950/30 border-amber-800/40"}`}>
             <div className="flex items-center gap-2 mb-2">
               {svc.allCovered
-                ? <CircleCheck className="h-4 w-4 text-emerald-400" />
+                ? <CircleCheck  className="h-4 w-4 text-emerald-400" />
                 : <AlertTriangle className="h-4 w-4 text-amber-400" />}
               <p className="text-sm font-semibold text-white">
                 {svc.allCovered ? "Service account covers all scopes" : "Service account missing some scopes"}
@@ -399,13 +369,11 @@ function ServiceAccountDialog({
                         const routes  = SCOPE_TO_NEXTJS_ROUTES[d.id] ?? [];
                         return (
                           <div key={d.id}>
-                            <div className="flex items-center justify-between">
-                              <div className="flex items-center gap-1.5">
-                                {covered
-                                  ? <CircleCheck className="h-3 w-3 text-emerald-400 shrink-0" />
-                                  : <CircleX     className="h-3 w-3 text-red-400 shrink-0" />}
-                                <span className="text-xs">{d.label}</span>
-                              </div>
+                            <div className="flex items-center gap-1.5">
+                              {covered
+                                ? <CircleCheck className="h-3 w-3 text-emerald-400 shrink-0" />
+                                : <CircleX     className="h-3 w-3 text-red-400 shrink-0" />}
+                              <span className="text-xs">{d.label}</span>
                             </div>
                             {routes.map((r) => (
                               <div key={r} className="ml-5 mt-0.5">
@@ -424,32 +392,29 @@ function ServiceAccountDialog({
 
           {/* Postman samples */}
           <div>
-            <p className="text-xs text-gray-500 uppercase tracking-wider mb-2">Postman Sample Requests</p>
+            <p className="text-xs text-gray-500 uppercase tracking-wider mb-2">Sample Requests</p>
             <div className="space-y-2">
-              {samples.slice(0, 4).map(({ scope, routes }) => {
-                // Build one sample per scope
+              {integrationKey.scopes.slice(0, 4).map((scope) => {
                 const [feature, action] = scope.split(":");
-                const sampleAction = action === "read" ? "list"
-                  : action === "write" ? "create"
-                  : action === "verify" ? "verify"
-                  : action === "mine" ? "mine"
-                  : action === "issue" ? "issue"
-                  : "list";
+                const sampleAction =
+                  action === "read"   ? "list"   :
+                  action === "write"  ? "create" :
+                  action === "verify" ? "verify" :
+                  action === "mine"   ? "mine"   :
+                  action === "issue"  ? "issue"  : "list";
+                const feat = ["kyc","users","blockchain","banks","audit"].includes(feature)
+                  ? feature : "certificates";
                 return (
                   <div key={scope} className="bg-gray-950 rounded-lg border border-gray-800 p-3">
                     <div className="flex items-center gap-2 mb-2">
                       <span className="text-xs bg-cyan-900/40 border border-cyan-800/40 text-cyan-400 px-1.5 py-0.5 rounded">POST</span>
-                      <code className="text-xs text-gray-300">
-                        /api/integration/{feature === "kyc" || feature === "users" || feature === "blockchain" || feature === "banks" || feature === "audit" ? feature : "certificates"}
-                      </code>
+                      <code className="text-xs text-gray-300">/api/integration/{feat}</code>
                       <span className="ml-auto text-xs text-gray-600">{scope}</span>
                     </div>
                     <pre className="text-xs text-emerald-400 font-mono whitespace-pre">{JSON.stringify({
                       action: sampleAction,
-                      ...(sampleAction === "list" ? { params: { page: "1", per_page: "10" } } : {}),
-                      ...(["verify","reject","create"].includes(sampleAction)
-                        ? { data: { customer_id: "CUST-abc123" } }
-                        : {}),
+                      ...(sampleAction === "list"   ? { params: { page: "1", per_page: "10" } } : {}),
+                      ...(["verify","create"].includes(sampleAction) ? { data: { customer_id: "CUST-abc123" } } : {}),
                     }, null, 2)}</pre>
                   </div>
                 );
@@ -459,12 +424,9 @@ function ServiceAccountDialog({
               Header: <code className="text-gray-500">Authorization: Bearer kyk_…</code>
             </p>
           </div>
-
         </div>
 
-        <Button onClick={onClose} className="w-full mt-2 bg-gray-800 hover:bg-gray-700 text-white">
-          Close
-        </Button>
+        <Button onClick={onClose} className="w-full mt-2 bg-gray-800 hover:bg-gray-700 text-white">Close</Button>
       </DialogContent>
     </Dialog>
   );
@@ -494,7 +456,6 @@ function NewIntegrationKeyDialog({
     }
   }, [open]);
 
-  // Preview which service account role is needed for selected scopes
   const svcPreview = checkServiceAccountCoverage(scopes);
 
   const handleCreate = async () => {
@@ -526,9 +487,7 @@ function NewIntegrationKeyDialog({
         scope_counts_today:  {},
       };
 
-      const existing = loadKeys();
-      persistKeys([...existing, entry]);
-      syncToServer([...existing, entry]);
+      await apiSyncKeys([entry]);
       setResult({ key: entry, fullKey });
       onCreated(entry);
       toast({ title: "API key created — copy it now!" });
@@ -595,12 +554,11 @@ function NewIntegrationKeyDialog({
               <ScopePicker value={scopes} onChange={setScopes} />
             </div>
 
-            {/* Live service account coverage preview */}
             {scopes.length > 0 && (
               <div className={`rounded-lg border px-3.5 py-3 text-xs ${svcPreview.allCovered ? "bg-emerald-950/20 border-emerald-800/30" : "bg-amber-950/20 border-amber-800/30"}`}>
                 <div className="flex items-center gap-2 mb-1">
                   {svcPreview.allCovered
-                    ? <CircleCheck className="h-3.5 w-3.5 text-emerald-400" />
+                    ? <CircleCheck   className="h-3.5 w-3.5 text-emerald-400" />
                     : <AlertTriangle className="h-3.5 w-3.5 text-amber-400" />}
                   <span className={svcPreview.allCovered ? "text-emerald-300" : "text-amber-300"}>
                     Service account <code className="font-mono">{svcPreview.username}</code> ({svcPreview.role})
@@ -688,15 +646,12 @@ function EditScopesDialog({
 
   useEffect(() => { if (editKey) setScopes([...editKey.scopes]); }, [editKey]);
 
-  const handleSave = () => {
+  const handleSave = async () => {
     if (!editKey) return;
     if (!scopes.length) { toast({ title: "Select at least one permission", variant: "destructive" }); return; }
     setSaving(true);
     try {
-      const all = loadKeys();
-      const upd = all.map((k) => k.id === editKey.id ? { ...k, scopes } : k);
-      persistKeys(upd);
-      syncToServer(upd);
+      await apiSyncKeys([{ ...editKey, scopes }]);
       onSaved({ ...editKey, scopes });
       toast({ title: "Permissions updated" });
       onClose();
@@ -727,7 +682,7 @@ function EditScopesDialog({
   );
 }
 
-// ─── Per-API Summary Panel ─────────────────────────────────────────────────────
+// ─── Request Summary Panel ────────────────────────────────────────────────────
 
 function ApiSummaryPanel({ keys }: { keys: IntegrationKey[] }) {
   const live = keys.filter((k) => !k.is_deleted);
@@ -808,30 +763,27 @@ export default function KeysPage() {
   const [intLoading,  setIntLoading]  = useState(true);
   const [showNew,     setShowNew]     = useState(false);
   const [editKey,     setEditKey]     = useState<IntegrationKey | null>(null);
-  const [svcKey,      setSvcKey]      = useState<IntegrationKey | null>(null); // ← service account dialog
+  const [svcKey,      setSvcKey]      = useState<IntegrationKey | null>(null);
   const [intSearch,   setIntSearch]   = useState("");
   const [showDeleted, setShowDeleted] = useState(false);
   const [visiblePfx,  setVisiblePfx]  = useState<Set<string>>(new Set());
-
   const [refreshMs,   setRefreshMs]   = useState(0);
   const [lastRefresh, setLastRefresh] = useState(new Date());
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const fetchIntKeys = useCallback(() => {
+  // ── Load from Postgres ────────────────────────────────────────────────────
+  const fetchIntKeys = useCallback(async () => {
     setIntLoading(true);
-    try { setIntKeys(loadKeys()); }
-    catch { setIntKeys([]); }
+    try {
+      const keys = await apiLoadKeys();
+      setIntKeys(keys);
+    } catch { setIntKeys([]); }
     finally { setIntLoading(false); }
   }, []);
 
   useEffect(() => { fetchIntKeys(); }, [fetchIntKeys]);
 
-  // ── Sync localStorage → server on mount ──────────────────────────────────
-  useEffect(() => {
-    const keys = loadKeys();
-    syncToServer(keys); // always sync — creates file even if empty
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
-
+  // ── Auto-refresh timer ────────────────────────────────────────────────────
   useEffect(() => {
     if (timerRef.current) clearInterval(timerRef.current);
     if (refreshMs > 0) {
@@ -845,30 +797,29 @@ export default function KeysPage() {
 
   const handleRefresh = () => { fetchIntKeys(); setLastRefresh(new Date()); };
 
-  const mutateIntKey = (id: string, patch: Partial<IntegrationKey>) => {
-    setIntKeys((prev) => {
-      const updated = prev.map((k) => k.id === id ? { ...k, ...patch } : k);
-      persistKeys(updated);
-      syncToServer(updated);
-      return updated;
-    });
+  // ── Mutations — optimistic update + Postgres persist ─────────────────────
+  const mutateIntKey = async (id: string, patch: Partial<IntegrationKey>) => {
+    const updated = intKeys.map((k) => k.id === id ? { ...k, ...patch } : k);
+    setIntKeys(updated);
+    await apiSyncKeys(updated);
   };
 
-  const toggleActive = (k: IntegrationKey) => {
-    mutateIntKey(k.id, { is_active: !k.is_active });
+  const toggleActive = async (k: IntegrationKey) => {
+    await mutateIntKey(k.id, { is_active: !k.is_active });
     toast({ title: k.is_active ? `"${k.name}" disabled` : `"${k.name}" enabled` });
   };
 
-  const softDelete = (k: IntegrationKey) => {
-    mutateIntKey(k.id, { is_deleted: true, is_active: false });
+  const softDelete = async (k: IntegrationKey) => {
+    await mutateIntKey(k.id, { is_deleted: true, is_active: false });
     toast({ title: `"${k.name}" deleted (soft)` });
   };
 
-  const restoreKey = (k: IntegrationKey) => {
-    mutateIntKey(k.id, { is_deleted: false });
+  const restoreKey = async (k: IntegrationKey) => {
+    await mutateIntKey(k.id, { is_deleted: false });
     toast({ title: `"${k.name}" restored` });
   };
 
+  // ── Derived state ─────────────────────────────────────────────────────────
   const filtered = intKeys.filter((k) => {
     if (!showDeleted && k.is_deleted) return false;
     const q = intSearch.toLowerCase();
@@ -877,12 +828,12 @@ export default function KeysPage() {
 
   const live = intKeys.filter((k) => !k.is_deleted);
   const stats = {
-    total:      live.length,
-    active:     live.filter((k) => k.is_active).length,
-    disabled:   live.filter((k) => !k.is_active).length,
-    deleted:    intKeys.filter((k) => k.is_deleted).length,
-    totalReqs:  live.reduce((s, k) => s + k.request_count, 0),
-    todayReqs:  live.reduce((s, k) => s + k.request_count_today, 0),
+    total:     live.length,
+    active:    live.filter((k) => k.is_active).length,
+    disabled:  live.filter((k) => !k.is_active).length,
+    deleted:   intKeys.filter((k) => k.is_deleted).length,
+    totalReqs: live.reduce((s, k) => s + k.request_count, 0),
+    todayReqs: live.reduce((s, k) => s + k.request_count_today, 0),
   };
 
   return (
@@ -924,17 +875,17 @@ export default function KeysPage() {
 
         {/* Stats */}
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
-          <StatPill label="Total Keys"     value={stats.total}     accent="bg-gray-800/60 border-gray-700"         />
-          <StatPill label="Active"         value={stats.active}    accent="bg-emerald-900/20 border-emerald-800/40" />
-          <StatPill label="Disabled"       value={stats.disabled}  accent="bg-gray-800/40 border-gray-700"          />
-          <StatPill label="Deleted"        value={stats.deleted}   accent="bg-red-900/20 border-red-800/40"         />
-          <StatPill label="Total Requests" value={stats.totalReqs} accent="bg-cyan-900/20 border-cyan-800/40"       />
-          <StatPill label="Today"          value={stats.todayReqs} accent="bg-blue-900/20 border-blue-800/40"       />
+          <StatPill label="Total Keys"     value={stats.total}     accent="bg-gray-800/60 border-gray-700"          />
+          <StatPill label="Active"         value={stats.active}    accent="bg-emerald-900/20 border-emerald-800/40"  />
+          <StatPill label="Disabled"       value={stats.disabled}  accent="bg-gray-800/40 border-gray-700"           />
+          <StatPill label="Deleted"        value={stats.deleted}   accent="bg-red-900/20 border-red-800/40"          />
+          <StatPill label="Total Requests" value={stats.totalReqs} accent="bg-cyan-900/20 border-cyan-800/40"        />
+          <StatPill label="Today"          value={stats.todayReqs} accent="bg-blue-900/20 border-blue-800/40"        />
         </div>
 
         <ApiSummaryPanel keys={intKeys} />
 
-        {/* Keys Table */}
+        {/* Table */}
         <Card className="bg-gray-900 border-gray-800">
           <CardHeader className="pb-3 border-b border-gray-800 pt-4 px-4">
             <div className="flex items-center gap-2">
@@ -989,7 +940,8 @@ export default function KeysPage() {
                            : "No integration API keys yet"}
                         </p>
                         {!intSearch && (
-                          <Button onClick={() => setShowNew(true)} size="sm" variant="outline" className="border-gray-700 text-gray-400 hover:text-white mt-1">
+                          <Button onClick={() => setShowNew(true)} size="sm" variant="outline"
+                            className="border-gray-700 text-gray-400 hover:text-white mt-1">
                             <Plus className="h-3.5 w-3.5 mr-1.5" />Create first key
                           </Button>
                         )}
@@ -999,12 +951,12 @@ export default function KeysPage() {
                 ) : (
                   filtered.map((k) => {
                     const isExpired  = k.expires_at > 0 && k.expires_at < Date.now();
+                    const daysLeft   = k.expires_at > 0 ? Math.floor((k.expires_at - Date.now()) / 86_400_000) : null;
                     const pfxVisible = visiblePfx.has(k.id);
                     const togglePfx  = () => setVisiblePfx((p) => {
                       const n = new Set(p); n.has(k.id) ? n.delete(k.id) : n.add(k.id); return n;
                     });
-                    const daysLeft   = k.expires_at > 0 ? Math.floor((k.expires_at - Date.now()) / 86_400_000) : null;
-                    const svc        = checkServiceAccountCoverage(k.scopes);
+                    const svc = checkServiceAccountCoverage(k.scopes);
 
                     return (
                       <TableRow key={k.id}
@@ -1050,14 +1002,12 @@ export default function KeysPage() {
                           </div>
                         </TableCell>
 
-                        {/* ── NEW: Service Account column ── */}
+                        {/* Service Account */}
                         <TableCell className="py-3.5">
-                          <button
-                            onClick={() => setSvcKey(k)}
-                            className="flex items-center gap-1.5 group hover:opacity-80 transition-opacity"
-                          >
+                          <button onClick={() => setSvcKey(k)}
+                            className="flex items-center gap-1.5 group hover:opacity-80 transition-opacity">
                             {svc.allCovered
-                              ? <CircleCheck className="h-3.5 w-3.5 text-emerald-400 shrink-0" />
+                              ? <CircleCheck  className="h-3.5 w-3.5 text-emerald-400 shrink-0" />
                               : <AlertTriangle className="h-3.5 w-3.5 text-amber-400 shrink-0" />}
                             <div className="text-left">
                               <p className="text-xs text-gray-300 font-mono">{svc.username}</p>
@@ -1156,7 +1106,7 @@ export default function KeysPage() {
                               )}
                               {k.is_deleted && (
                                 <DropdownMenuItem
-                                  className="text-emerald-400 hover:text-emerald-300 focus:emerald-300 focus:bg-emerald-900/20 cursor-pointer text-sm"
+                                  className="text-emerald-400 hover:text-emerald-300 focus:bg-emerald-900/20 cursor-pointer text-sm"
                                   onClick={() => restoreKey(k)}>
                                   <RefreshCw className="h-3.5 w-3.5 mr-2" />Restore Key
                                 </DropdownMenuItem>
@@ -1176,7 +1126,7 @@ export default function KeysPage() {
                   {filtered.filter((k) => !k.is_deleted).length} active
                   {showDeleted && ` · ${filtered.filter((k) => k.is_deleted).length} deleted`}
                 </p>
-                <p className="text-xs text-gray-700">Stored in browser · synced to server on load</p>
+                <p className="text-xs text-gray-700">Stored in PostgreSQL · synced via /api/integration/sync</p>
               </div>
             )}
           </CardContent>
