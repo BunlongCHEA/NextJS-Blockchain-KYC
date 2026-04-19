@@ -59,6 +59,9 @@ interface Certificate {
     risk_level: string;
     bank_id: string;
   };
+  // is_active=true  → latest cert for this customer+requester (default view)
+  // is_active=false → superseded cert (only shown when history mode is on)
+  is_active?: boolean;
 }
 
 interface FullCertificate {
@@ -1753,6 +1756,9 @@ export default function CertificatesPage() {
   const [requesterKeys, setRequesterKeys] = useState<RequesterKey[]>([]);
   const [banks,         setBanks]         = useState<Bank[]>([]);
 
+  // History toggle: false=only is_active certs, true=full audit trail
+  const [includeHistory, setIncludeHistory] = useState(false);
+
   // Dialog state
   const [showIssue,       setShowIssue]       = useState(false);
   const [showGenerateKey, setShowGenerateKey] = useState(false);
@@ -1768,11 +1774,13 @@ export default function CertificatesPage() {
   const fetchCerts = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await api.get("/api/v1/certificates/list");
+      const res = await api.get("/api/v1/certificates/list", {
+        params: { include_history: includeHistory ? "true" : "false" },
+      });
       const data = res.data?.data || res.data || [];
       setCerts(Array.isArray(data) ? data : []);
     } catch { setCerts([]); } finally { setLoading(false); }
-  }, []);
+  }, [includeHistory]);
 
   // Fetch requester keys
   const fetchKeys = useCallback(async () => {
@@ -1797,6 +1805,9 @@ export default function CertificatesPage() {
     fetchKeys();
     fetchBanks();
   }, [fetchCerts, fetchKeys, fetchBanks]);
+
+  // Re-fetch when history toggle changes
+  useEffect(() => { fetchCerts(); }, [includeHistory]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Filter
   const filtered = certs.filter((c) => {
@@ -1837,20 +1848,19 @@ export default function CertificatesPage() {
       verification_date:    cert.verification_date,
       requester_public_key: cert.requester_public_key,
       kyc_summary:          cert.kyc_summary,
+      is_active:            true,
     };
 
     setCerts((prev) => {
-      // Replace existing cert for same customer+requester (DB upsert behavior),
-      // otherwise prepend as a new entry
-      const idx = prev.findIndex(
-        (c) => c.customer_id === row.customer_id && c.requester_id === row.requester_id
+      const deactivated = prev.map((c) =>
+        c.customer_id === row.customer_id && c.requester_id === row.requester_id
+          ? { ...c, is_active: false }
+          : c
       );
-      if (idx !== -1) {
-        const updated = [...prev];
-        updated[idx] = row;
-        return updated;
-      }
-      return [row, ...prev];
+      const base = includeHistory
+        ? deactivated
+        : deactivated.filter((c) => c.is_active !== false);
+      return [row, ...base.filter((c) => c.certificate_id !== row.certificate_id)];
     });
 
     setSelected(row);
@@ -1976,7 +1986,7 @@ export default function CertificatesPage() {
         {/* ── Table ── */}
         <Card className="bg-gray-900 border-gray-800">
           <CardHeader className="pb-3 border-b border-gray-800 px-4 pt-4">
-            <div className="flex gap-2">
+            <div className="flex gap-2 flex-wrap">
               <div className="relative flex-1 max-w-sm">
                 <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-gray-500" />
                 <Input
@@ -1998,6 +2008,28 @@ export default function CertificatesPage() {
                   <SelectItem value="expired">Expired</SelectItem>
                 </SelectContent>
               </Select>
+
+              {/* History toggle */}
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    onClick={() => setIncludeHistory((p) => !p)}
+                    className={`flex items-center gap-1.5 h-8 px-2.5 text-xs rounded-lg border transition-colors ${
+                      includeHistory
+                        ? "bg-violet-900/20 border-violet-800/50 text-violet-300"
+                        : "bg-gray-800 border-gray-700 text-gray-500 hover:border-gray-600 hover:text-gray-300"
+                    }`}
+                  >
+                    <Clock className="h-3.5 w-3.5" />
+                    {includeHistory ? "History On" : "History"}
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent className="bg-gray-800 border-gray-700 text-xs max-w-[200px]">
+                  {includeHistory
+                    ? "Showing all certificates including superseded ones"
+                    : "Showing only the latest certificate per customer — click to include history"}
+                </TooltipContent>
+              </Tooltip>
             </div>
           </CardHeader>
 
@@ -2044,14 +2076,22 @@ export default function CertificatesPage() {
                     const daysLeft   = differenceInDays(cert.expires_at * 1000, Date.now());
                     // Match requester key for display
                     const matchedKey = requesterKeys.find((k) => k.key_name === cert.requester_id || k.id === cert.requester_id);
+                    const isSuperseded = cert.is_active === false;
                     return (
                       <TableRow
                         key={cert.certificate_id}
-                        className="border-gray-800 hover:bg-gray-800/30 cursor-pointer transition-colors"
+                        className={`border-gray-800 hover:bg-gray-800/30 cursor-pointer transition-colors ${isSuperseded ? "opacity-50" : ""}`}
                         onClick={() => { setSelected(cert); setFullCert(null); }}
                       >
                         <TableCell className="pl-4 py-3.5">
-                          <p className="text-white text-sm font-medium">{cert.customer_name || cert.customer_id}</p>
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <p className="text-white text-sm font-medium">{cert.customer_name || cert.customer_id}</p>
+                            {isSuperseded && (
+                              <span className="text-xs bg-gray-800 border border-gray-700 text-gray-500 px-1.5 py-0.5 rounded">
+                                Superseded
+                              </span>
+                            )}
+                          </div>
                           <p className="text-gray-500 text-xs font-mono mt-0.5">{cert.customer_id}</p>
                         </TableCell>
                         <TableCell className="py-3.5">
