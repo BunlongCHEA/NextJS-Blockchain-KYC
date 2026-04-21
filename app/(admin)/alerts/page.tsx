@@ -301,13 +301,14 @@ function ConfigureAlertDialog({
   onSaved: (updated: RenewalAlert) => void;
 }) {
   const { toast }                   = useToast();
-  const [delivery, setDelivery]     = useState<DeliveryChannel>("none");
-  const [interval, setInterval]     = useState<AlertInterval>("immediate");
-  const [email, setEmail]           = useState("");
-  const [webhook, setWebhook]       = useState("");
-  const [isActive, setIsActive]     = useState(true);
-  const [saving, setSaving]         = useState(false);
-  const [sending, setSending]       = useState(false);
+  const [delivery, setDelivery]       = useState<DeliveryChannel>("none");
+  const [interval, setInterval]       = useState<AlertInterval>("immediate");
+  const [email, setEmail]             = useState("");
+  const [webhook, setWebhook]         = useState("");
+  const [isActive, setIsActive]       = useState(true);
+  const [saving, setSaving]           = useState(false);
+  const [sending, setSending]         = useState(false);
+  const [customerEmail, setCustomerEmail] = useState<string>("");
 
   useEffect(() => {
     if (alert) {
@@ -316,6 +317,27 @@ function ConfigureAlertDialog({
       setEmail(alert.email_recipient ?? "");
       setWebhook(alert.webhook_url ?? "");
       setIsActive(alert.is_active !== false);
+      setCustomerEmail("");
+
+      // Auto-lookup customer email from KYC / user list
+      api.get("/api/v1/kyc", { params: { customer_id: alert.customer_id } })
+        .then(res => {
+          const kycEmail = res.data?.data?.kyc_data?.email;
+          if (kycEmail && kycEmail !== "[ENCRYPTED]") setCustomerEmail(kycEmail);
+        })
+        .catch(() => {
+          // Fallback: try user list
+          api.get("/api/v1/users/list")
+            .then(res => {
+              const users: any[] = res.data?.data?.users ?? [];
+              // customer_id matches username or user id
+              const match = users.find(u =>
+                u.id === alert.customer_id || u.username === alert.customer_id
+              );
+              if (match?.email) setCustomerEmail(match.email);
+            })
+            .catch(() => {});
+        });
     }
   }, [alert]);
 
@@ -435,11 +457,19 @@ function ConfigureAlertDialog({
                 <Label className="text-gray-300 text-sm">Email Address <span className="text-red-400">*</span></Label>
                 <Input
                   type="email"
-                  placeholder="alerts@ababank.com"
+                  placeholder={customerEmail || "alerts@ababank.com"}
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                   className="bg-gray-800 border-gray-700 text-white placeholder:text-gray-600"
                 />
+                {customerEmail && !email && (
+                  <button
+                    onClick={() => setEmail(customerEmail)}
+                    className="text-xs text-cyan-400 hover:text-cyan-300 transition-colors"
+                  >
+                    ↑ Use customer email: {customerEmail}
+                  </button>
+                )}
               </div>
             )}
 
@@ -601,17 +631,30 @@ export default function AlertsPage() {
   };
 
   const handleConfigSaved = (updated: RenewalAlert) => {
-    setRenewAlerts((prev) => prev.map((a) => a.id === updated.id ? updated : a));
+    // The Go backend updated ALL rows for the certificate_id (delivery, is_active, etc.)
+    // Mirror that in React state: rows with the same certificate_id get the same
+    // delivery/webhook/email/send_interval/is_active.  Each row keeps its own
+    // id, alert_type, alert_date, status, sent_at (those are per-row fields).
+    setRenewAlerts((prev) => prev.map((a) => {
+      if (a.certificate_id !== updated.certificate_id) return a;
+      // Same cert → apply the shared config fields
+      return {
+        ...a,
+        is_active:       updated.is_active,
+        delivery:        updated.delivery,
+        send_interval:   updated.send_interval,
+        webhook_url:     updated.webhook_url,
+        email_recipient: updated.email_recipient,
+      };
+    }));
   };
 
   const toggleRenewActive = async (alert: RenewalAlert) => {
     try {
+      // Use alert_id to update ONLY this single row — not all rows for the cert
       await api.post("/api/v1/alerts/renewal/configure", {
-        certificate_id: alert.certificate_id,
-        is_active:      !alert.is_active,
-        webhook_url:    alert.webhook_url ?? "",
-        email_recipient: alert.email_recipient ?? "",
-        send_interval:  alert.send_interval ?? "immediate",
+        alert_id:  alert.id,
+        is_active: !alert.is_active,
       });
       setRenewAlerts((prev) =>
         prev.map((a) => a.id === alert.id ? { ...a, is_active: !alert.is_active } : a)
