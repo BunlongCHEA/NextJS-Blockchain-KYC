@@ -21,7 +21,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { User } from "@/types/auth";
+import { User, Role } from "@/types/auth";
 import api from "@/lib/api";
 import { toast } from "@/components/ui/use-toast";
 import { format } from "date-fns";
@@ -368,8 +368,14 @@ export default function UsersPage() {
                   </TableRow>
                 ) : (
                   filtered.map((user) => {
+                    const ROLE_ASSIGN_EXEMPT: Role[] = ["customer", "integration_service"];
                     const bank = banks.find(b => b.id === (user as any).bank_id);
                     const isAdmin = user.username === "admin";
+                    const isRoleExempt      = ROLE_ASSIGN_EXEMPT.includes(user.role);  // extracted statement
+
+                    // Assign Role is not applicable for customer or integration_service accounts
+                    const isRoleAssignDisabled = isAdmin || isRoleExempt;
+                      
                     return (
                       <TableRow key={user.id} className="border-gray-800 hover:bg-gray-800/50">
                         <TableCell className="text-white font-medium">
@@ -426,9 +432,15 @@ export default function UsersPage() {
                               </DropdownMenuItem> */}
                               <DropdownMenuSub>
                                 <DropdownMenuSubTrigger
-                                  disabled={isAdmin}
-                                  className="cursor-pointer hover:bg-gray-700 focus:bg-gray-700 data-[state=open]:bg-gray-700">
-                                  <TrendingUp className="mr-2 h-4 w-4" />Assign Role
+                                  disabled={isRoleAssignDisabled}
+                                  className={`cursor-pointer hover:bg-gray-700 focus:bg-gray-700 data-[state=open]:bg-gray-700 ${
+                                    isRoleAssignDisabled ? "opacity-40 cursor-not-allowed" : ""
+                                  }`}>
+                                  <TrendingUp className="mr-2 h-4 w-4" />
+                                  Assign Role
+                                  {isRoleExempt && (
+                                    <span className="ml-auto text-xs text-gray-600">n/a</span>
+                                  )}
                                 </DropdownMenuSubTrigger>
                                 <DropdownMenuSubContent className="bg-gray-800 border-gray-700 text-gray-200">
                                   {ALL_ROLES.map((r) => {
