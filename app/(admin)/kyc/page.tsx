@@ -95,7 +95,7 @@ function KYCDetailDrawer({
       setDecryptedRecord(kycData);
       setRevealed(true);
 
-      console.log("Decrypted KYC data:", kycData);
+      // console.log("Decrypted KYC data:", kycData);
     } catch (err: any) {
       setDecryptError(
         err?.response?.data?.error ?? "Failed to decrypt — check your permissions"

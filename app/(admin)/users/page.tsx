@@ -216,7 +216,7 @@ export default function UsersPage() {
       const res = await api.get("/api/v1/users/list");
       const payload = res.data?.data;
 
-      console.log("[UsersPage] API response payload:", payload);
+      // console.log("[UsersPage] API response payload:", payload);
 
       const arr = payload?.users ?? payload ?? [];
       setUsers(Array.isArray(arr) ? arr : []);
