@@ -76,12 +76,12 @@ const menuItems: MenuItem[] = [
     icon: Activity,
     roles: ["admin", "auditor"],
   },
-  {
-    label: "Security",
-    href: "/security",
-    icon: Lock,
-    roles: ["admin"],
-  },
+  // {
+  //   label: "Security",
+  //   href: "/security",
+  //   icon: Lock,
+  //   roles: ["admin"],
+  // },
   {
     label: "API Keys",
     href: "/keys",
