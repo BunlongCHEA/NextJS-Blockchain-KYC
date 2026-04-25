@@ -58,8 +58,11 @@ ENV NEXT_TELEMETRY_DISABLED=1
 RUN addgroup --system --gid 1001 nodejs \
  && adduser  --system --uid 1001 nextjs
 
-# Copy only what the standalone server needs
-COPY --from=builder /app/public ./public
+# Create public/ 
+RUN mkdir -p ./public
+
+# # Copy only what the standalone server needs
+# COPY --from=builder /app/public ./public
 
 # next build --output=standalone puts server.js + node_modules inside .next/standalone
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
