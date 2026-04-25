@@ -1,0 +1,18 @@
+# ClusterIssuer — letsencrypt-staging
+# This is the same ClusterIssuer already defined in the Go backend k8s manifests.
+# Applying it here is safe (idempotent) — kubectl apply won't overwrite if identical.
+# It's included so the frontend ArgoCD app is fully self-contained.
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-staging
+spec:
+  acme:
+    server: https://acme-staging-v02.api.letsencrypt.org/directory
+    email: chea.bunlong.cloud2@gmail.com
+    privateKeySecretRef:
+      name: letsencrypt-staging-key
+    solvers:
+      - http01:
+          ingress:
+            class: traefik

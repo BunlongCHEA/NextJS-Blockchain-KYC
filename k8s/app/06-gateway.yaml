@@ -1,0 +1,214 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Traefik Gateway API
+# Docs: https://doc.traefik.io/traefik/reference/routing-configuration/kubernetes/gateway-api/
+#
+# Prerequisites (run once per cluster):
+#   kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.2.1/standard-install.yaml
+#
+# Traefik must be installed with the Gateway API feature gate enabled:
+#   --experimental.kubernetesGateway=true
+# In k3s, set via HelmChartConfig or Traefik values:
+#   additionalArguments:
+#     - "--experimental.kubernetesGateway=true"
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── GatewayClass — one per cluster, references Traefik controller ─────────────
+apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: traefik
+  labels:
+    app.kubernetes.io/part-of: kyc-system
+spec:
+  controllerName: traefik.io/gateway-controller
+
+---
+# ── Gateway — entry point for all KYC traffic ─────────────────────────────────
+# One Gateway covers both the frontend (kyc.bunlong.uk) and
+# the backend (kycapi.bunlong.uk). Routes decide which hostname goes where.
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: kyc-gateway
+  # Gateways are typically cluster-scoped via a shared namespace.
+  # Placing it in kyc-blockchain-frontend so ArgoCD manages it alongside the frontend.
+  namespace: kyc-blockchain-frontend
+  labels:
+    app.kubernetes.io/name: kyc-blockchain-frontend
+    app.kubernetes.io/part-of: kyc-system
+  annotations:
+    # cert-manager will provision and renew TLS certs automatically.
+    # ClusterIssuer "letsencrypt-staging" is already deployed in the Go k8s manifests.
+    cert-manager.io/cluster-issuer: "letsencrypt-staging"
+spec:
+  gatewayClassName: traefik
+  listeners:
+    # HTTP — redirects to HTTPS (handled by HTTPRoute below)
+    - name: http
+      protocol: HTTP
+      port: 80
+      allowedRoutes:
+        namespaces:
+          from: All    # allows HTTPRoutes from any namespace
+
+    # HTTPS — frontend (kyc.bunlong.uk)
+    - name: https-frontend
+      protocol: HTTPS
+      port: 443
+      hostname: "kyc.bunlong.uk"
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - kind: Secret
+            name: kyc-frontend-tls-staging
+            namespace: kyc-blockchain-frontend
+      allowedRoutes:
+        namespaces:
+          from: Selector
+          selector:
+            matchLabels:
+              kubernetes.io/metadata.name: kyc-blockchain-frontend
+
+    # HTTPS — Go backend API (kycapi.bunlong.uk)
+    - name: https-backend
+      protocol: HTTPS
+      port: 443
+      hostname: "kycapi.bunlong.uk"
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - kind: Secret
+            name: kyc-backend-tls-staging
+            namespace: kyc-blockchain
+      allowedRoutes:
+        namespaces:
+          from: Selector
+          selector:
+            matchLabels:
+              kubernetes.io/metadata.name: kyc-blockchain
+
+---
+# ── Certificate — frontend TLS (cert-manager auto-provisions) ─────────────────
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: kyc-frontend-tls-staging
+  namespace: kyc-blockchain-frontend
+spec:
+  secretName: kyc-frontend-tls-staging
+  issuerRef:
+    name: letsencrypt-staging
+    kind: ClusterIssuer
+  dnsNames:
+    - kyc.bunlong.uk
+
+---
+# ── Certificate — backend TLS ─────────────────────────────────────────────────
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: kyc-backend-tls-staging
+  namespace: kyc-blockchain
+spec:
+  secretName: kyc-backend-tls-staging
+  issuerRef:
+    name: letsencrypt-staging
+    kind: ClusterIssuer
+  dnsNames:
+    - kycapi.bunlong.uk
+
+---
+# ── HTTPRoute — HTTP → HTTPS redirect (all hostnames) ────────────────────────
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: kyc-http-redirect
+  namespace: kyc-blockchain-frontend
+spec:
+  parentRefs:
+    - name: kyc-gateway
+      namespace: kyc-blockchain-frontend
+      sectionName: http
+  hostnames:
+    - "kyc.bunlong.uk"
+    - "kycapi.bunlong.uk"
+  rules:
+    - filters:
+        - type: RequestRedirect
+          requestRedirect:
+            scheme: https
+            statusCode: 301
+
+---
+# ── HTTPRoute — Frontend (kyc.bunlong.uk → kyc-frontend-service) ─────────────
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: kyc-frontend-route
+  namespace: kyc-blockchain-frontend
+spec:
+  parentRefs:
+    - name: kyc-gateway
+      namespace: kyc-blockchain-frontend
+      sectionName: https-frontend
+  hostnames:
+    - "kyc.bunlong.uk"
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: kyc-frontend-service
+          namespace: kyc-blockchain-frontend
+          port: 80
+      timeouts:
+        request: 30s
+        backendRequest: 25s
+
+---
+# ── HTTPRoute — Backend API (kycapi.bunlong.uk → Go service) ─────────────────
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: kyc-backend-route
+  namespace: kyc-blockchain   # must be in same namespace as the backend service
+spec:
+  parentRefs:
+    - name: kyc-gateway
+      namespace: kyc-blockchain-frontend   # references the shared Gateway
+      sectionName: https-backend
+  hostnames:
+    - "kycapi.bunlong.uk"
+  rules:
+    # Public endpoints — no auth (cert verify, health, auth)
+    - matches:
+        - path:
+            type: Exact
+            value: /health
+        - path:
+            type: PathPrefix
+            value: /api/v1/auth
+        - path:
+            type: PathPrefix
+            value: /api/v1/banks/list
+        - path:
+            type: Exact
+            value: /api/v1/certificate/verify
+      backendRefs:
+        - name: kyc-blockchain-service
+          port: 80
+      timeouts:
+        request: 30s
+
+    # All other API routes
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: kyc-blockchain-service
+          port: 80
+      timeouts:
+        request: 60s       # longer for AI scan endpoints
+        backendRequest: 55s

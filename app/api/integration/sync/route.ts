@@ -15,7 +15,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 // import { writeServerKeys, readServerKeys } from "../lib/gateway";
-import { syncKeys, readServerKeys }  from "../lib/db";
+import { syncKeys, readServerKeys } from "../lib/db";
 
 export async function POST(req: NextRequest) {
   const session = await auth();

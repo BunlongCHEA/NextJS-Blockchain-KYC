@@ -1,0 +1,87 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# NextJS Frontend — Prometheus Monitoring
+#
+# For metrics to work, add this API route to your NextJS app:
+#   app/api/health/route.ts
+#   export async function GET() {
+#     return Response.json({ status: "ok", timestamp: Date.now() })
+#   }
+#
+# For proper Prometheus metrics, add the prom-client npm package and expose
+# a /api/metrics endpoint, OR rely on the default Node.js / pod-level metrics
+# from the Prometheus Node Exporter (already scraping all pods).
+# ─────────────────────────────────────────────────────────────────────────────
+
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: kyc-frontend-monitor
+  namespace: kyc-blockchain-frontend
+  labels:
+    app.kubernetes.io/name: kyc-blockchain-frontend
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kyc-blockchain-frontend
+  namespaceSelector:
+    matchNames:
+      - kyc-blockchain-frontend
+  endpoints:
+    - port: http
+      interval: 30s
+      path: /api/metrics    # create this route in NextJS if using prom-client
+      scrapeTimeout: 10s
+
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: kyc-frontend-alerts
+  namespace: kyc-blockchain-frontend
+  labels:
+    app.kubernetes.io/name: kyc-blockchain-frontend
+spec:
+  groups:
+    - name: kyc-frontend.rules
+      rules:
+        # Frontend pod is down
+        - alert: KYCFrontendDown
+          expr: up{namespace="kyc-blockchain-frontend", service=~".*kyc-frontend.*"} == 0
+          for: 3m
+          labels:
+            severity: critical
+          annotations:
+            summary: "KYC Frontend is down"
+            description: "{{ $labels.pod }} has been unreachable for 3 minutes."
+
+        # Pod restart loop
+        - alert: KYCFrontendPodRestarting
+          expr: |
+            increase(kube_pod_container_status_restarts_total{
+              namespace="kyc-blockchain-frontend",
+              container="kyc-frontend"
+            }[1h]) > 3
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "KYC Frontend pod restarting frequently"
+            description: "{{ $labels.pod }} restarted {{ $value }} times in the last hour."
+
+        # High memory (>85% of limit)
+        - alert: KYCFrontendHighMemory
+          expr: |
+            container_memory_working_set_bytes{
+              namespace="kyc-blockchain-frontend",
+              container="kyc-frontend"
+            }
+            / container_spec_memory_limit_bytes{
+              namespace="kyc-blockchain-frontend",
+              container="kyc-frontend"
+            } > 0.85
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "KYC Frontend memory usage above 85%"
+            description: "Container memory approaching its limit — possible memory leak."

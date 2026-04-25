@@ -33,7 +33,7 @@
     "**/*.ts",
     "**/*.tsx",
     ".next/types/**/*.ts"
-  ],
+, "app/api/integration/lib/db.ts.example", "app/api/integration/lib/gateway.ts.example"  ],
   "exclude": [
     "node_modules"
   ]

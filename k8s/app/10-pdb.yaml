@@ -1,0 +1,12 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: kyc-frontend-pdb
+  namespace: kyc-blockchain-frontend
+  labels:
+    app.kubernetes.io/name: kyc-blockchain-frontend
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kyc-blockchain-frontend

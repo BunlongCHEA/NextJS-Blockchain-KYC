@@ -1,0 +1,34 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kyc-frontend-config
+  namespace: kyc-blockchain-frontend
+  labels:
+    app.kubernetes.io/name: kyc-blockchain-frontend
+data:
+  # ── Next.js runtime ────────────────────────────────────────────────────────
+  NODE_ENV: "production"
+  PORT: "3000"
+  HOSTNAME: "0.0.0.0"
+
+  # ── NextAuth ───────────────────────────────────────────────────────────────
+  # Public URL of the frontend itself — used by NextAuth callback URLs.
+  NEXTAUTH_URL: "https://kyc.bunlong.uk"
+
+  # ── Backend API URLs ───────────────────────────────────────────────────────
+  # NEXT_PUBLIC_* are accessible in the browser (baked at build, overridden at SSR).
+  # The SSR-side can also read NEXT_PUBLIC vars from the container environment.
+  NEXT_PUBLIC_API_URL: "https://kycapi.bunlong.uk"
+  NEXT_PUBLIC_PYTHON_API_URL: "https://kyc-python-api.bunlong.uk"
+
+  # ── Internal cluster URL for SSR API calls ─────────────────────────────────
+  # NextJS server-side code (getServerSideProps, API routes, server actions)
+  # can reach the Go backend directly via the cluster-internal service,
+  # bypassing the ingress/traefik hop. Faster + avoids public egress.
+  #
+  # Format: http://<service-name>.<namespace>.svc.cluster.local:<port>
+  # Go backend service is in namespace "kyc-blockchain", port 80 (maps to 8080).
+  #
+  # Use this in server-only code:
+  #   const apiUrl = process.env.API_URL
+  API_URL: "http://kyc-blockchain-service.kyc-blockchain.svc.cluster.local:80"

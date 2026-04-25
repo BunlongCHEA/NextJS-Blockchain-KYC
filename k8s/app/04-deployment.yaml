@@ -1,0 +1,169 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kyc-blockchain-frontend
+  namespace: kyc-blockchain-frontend
+  labels:
+    app.kubernetes.io/name: kyc-blockchain-frontend
+    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/part-of: kyc-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kyc-blockchain-frontend
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0       # zero-downtime rollout
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: kyc-blockchain-frontend
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "3000"
+        prometheus.io/path: "/api/metrics"   # wire up if you add a /api/metrics route
+    spec:
+      serviceAccountName: kyc-frontend-sa
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        runAsGroup: 1001
+        fsGroup: 1001
+
+      imagePullSecrets:
+        - name: gitlab-registry   # created by CI pipeline in this namespace
+
+      containers:
+        - name: kyc-frontend
+          # CI pipeline pushes to this path — ArgoCD rolls out on SHA tag change.
+          image: registry.gitlab.com/bunlongchea/nextjs-blockchain-kyc:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 3000
+              name: http
+              protocol: TCP
+
+          # ── Environment variables ─────────────────────────────────────────
+          env:
+            # Non-secret config from ConfigMap
+            - name: NODE_ENV
+              valueFrom:
+                configMapKeyRef:
+                  name: kyc-frontend-config
+                  key: NODE_ENV
+            - name: PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: kyc-frontend-config
+                  key: PORT
+            - name: HOSTNAME
+              valueFrom:
+                configMapKeyRef:
+                  name: kyc-frontend-config
+                  key: HOSTNAME
+            - name: NEXTAUTH_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: kyc-frontend-config
+                  key: NEXTAUTH_URL
+            - name: NEXT_PUBLIC_API_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: kyc-frontend-config
+                  key: NEXT_PUBLIC_API_URL
+            - name: NEXT_PUBLIC_PYTHON_API_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: kyc-frontend-config
+                  key: NEXT_PUBLIC_PYTHON_API_URL
+            - name: API_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: kyc-frontend-config
+                  key: API_URL
+
+            # Secrets
+            - name: NEXTAUTH_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: kyc-frontend-secrets
+                  key: NEXTAUTH_SECRET
+            - name: INTEGRATION_SERVICE_USER
+              valueFrom:
+                secretKeyRef:
+                  name: kyc-frontend-secrets
+                  key: INTEGRATION_SERVICE_USER
+            - name: INTEGRATION_SERVICE_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: kyc-frontend-secrets
+                  key: INTEGRATION_SERVICE_PASS
+            # - name: DATABASE_URL
+            #   valueFrom:
+            #     secretKeyRef:
+            #       name: kyc-frontend-secrets
+            #       key: DATABASE_URL
+
+          # ── Volume mounts ──────────────────────────────────────────────────
+          volumeMounts:
+            - name: tmp-volume
+              mountPath: /tmp
+            - name: cache-volume
+              mountPath: /app/.next/cache  # writable cache dir for ISR
+
+          # ── Resources ─────────────────────────────────────────────────────
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+
+          # ── Security ──────────────────────────────────────────────────────
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+
+          # ── Probes ────────────────────────────────────────────────────────
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: 3000
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: 3000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+
+          startupProbe:
+            httpGet:
+              path: /api/health
+              port: 3000
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 20   # 20 × 5s = 100s max startup time
+
+      volumes:
+        - name: tmp-volume
+          emptyDir:
+            medium: Memory
+            sizeLimit: 50Mi
+        - name: cache-volume
+          emptyDir:
+            sizeLimit: 200Mi     # ISR page cache — not memory-backed

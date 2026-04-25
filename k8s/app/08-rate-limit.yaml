@@ -1,0 +1,80 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Traefik Middlewares for NextJS Frontend
+# Applied via HTTPRoute annotations or Traefik IngressRoute.
+# With Gateway API, middleware is attached via Traefik's custom
+# MiddlewareRef annotation on the HTTPRoute (Traefik-specific extension).
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Rate limit — prevents abuse of the frontend SSR endpoints
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: frontend-ratelimit
+  namespace: kyc-blockchain-frontend
+spec:
+  rateLimit:
+    average: 100      # req/minute per IP
+    period: 1m
+    burst: 50
+
+---
+# Security headers — hardens the browser-facing responses
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: frontend-security-headers
+  namespace: kyc-blockchain-frontend
+spec:
+  headers:
+    # Prevent clickjacking
+    frameDeny: true
+    # Force HTTPS
+    forceSTSHeader: true
+    stsSeconds: 31536000
+    stsIncludeSubdomains: true
+    stsPreload: true
+    # Prevent MIME sniffing
+    contentTypeNosniff: true
+    # XSS protection
+    browserXssFilter: true
+    # Referrer policy
+    referrerPolicy: "strict-origin-when-cross-origin"
+    # CSP — adjust allowed sources to match your auth providers
+    customResponseHeaders:
+      Content-Security-Policy: >-
+        default-src 'self';
+        script-src 'self' 'unsafe-inline' 'unsafe-eval';
+        style-src 'self' 'unsafe-inline';
+        img-src 'self' data: https:;
+        font-src 'self' data:;
+        connect-src 'self' https://kycapi.bunlong.uk https://kyc-python-api.bunlong.uk;
+        frame-ancestors 'none'
+      X-Content-Type-Options: "nosniff"
+      Permissions-Policy: "camera=(), microphone=(), geolocation=()"
+
+---
+# CORS for frontend (needed if frontend has API routes consumed by external clients)
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: frontend-cors
+  namespace: kyc-blockchain-frontend
+spec:
+  headers:
+    accessControlAllowMethods:
+      - GET
+      - POST
+      - PUT
+      - DELETE
+      - OPTIONS
+      - PATCH
+    accessControlAllowOriginList:
+      - "https://kyc.bunlong.uk"
+    accessControlAllowHeaders:
+      - Authorization
+      - Content-Type
+      - X-Request-ID
+    accessControlExposeHeaders:
+      - X-Request-ID
+    accessControlMaxAge: 86400
+    accessControlAllowCredentials: true

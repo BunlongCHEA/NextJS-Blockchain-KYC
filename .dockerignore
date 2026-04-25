@@ -1,0 +1,15 @@
+.git
+.gitignore
+.gitlab-ci.yml
+.next
+node_modules
+npm-debug.log*
+README.md
+.env
+.env.*
+!.env.example
+k8s/
+*.md
+.DS_Store
+Dockerfile
+.dockerignore

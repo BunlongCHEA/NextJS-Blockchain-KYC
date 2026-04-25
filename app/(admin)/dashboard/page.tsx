@@ -226,7 +226,7 @@ export default function DashboardPage() {
     } catch { /* already captured in goHealth */ }
 
     // 2. Python /health — separate base URL via env var or default
-    const pythonBase = process.env.NEXT_PUBLIC_PYTHON_URL ?? "http://localhost:5001";
+    const pythonBase = process.env.NEXT_PUBLIC_PYTHON_API_URL ?? "http://localhost:5001";
     const pyHealth = await ping(() =>
       axios.get(`${pythonBase}/health`, { timeout: 5000 })
     );
