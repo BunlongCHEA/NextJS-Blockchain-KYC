@@ -6,6 +6,10 @@ import { Toaster } from "@/components/ui/toaster";
 export const metadata: Metadata = {
   title: "KYC Blockchain System",
   description: "Know Your Customer Blockchain Verification Platform",
+  icons: {
+    icon: "/icon.png",
+    apple: "/icon.png",
+  },
 };
 
 export default function RootLayout({

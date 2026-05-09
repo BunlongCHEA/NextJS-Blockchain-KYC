@@ -574,7 +574,13 @@ export default function AlertsPage() {
     setSecLoading(true);
     try {
       const params: Record<string, string> = {};
-      if (secRiskFilter !== "all") params.risk_level = secRiskFilter;
+      if (secRiskFilter !== "all") {
+        params.risk_level = secRiskFilter;
+      } else {
+        // Default: exclude Low to avoid display clutter.
+        // User can still select "Low" explicitly from the filter buttons.
+        params.exclude_level = "low";
+      }
       if (!secShowReviewed) params.reviewed = "false";
 
       const res = await api.get("/api/v1/security/alerts", { params });
@@ -611,10 +617,13 @@ export default function AlertsPage() {
   useEffect(() => { fetchRenewAlerts(); }, [fetchRenewAlerts]);
 
   // ─── Filter applied arrays ──────────────────────────────────────────────────
-  const filteredSec = secAlerts.filter((a) =>
-    (secRiskFilter === "all" || a.risk_level === secRiskFilter) &&
-    (secShowReviewed ? true : !a.reviewed)
-  );
+  const filteredSec = secAlerts.filter((a) => {
+    if (!secShowReviewed && a.reviewed) return false;
+    // Exclude Low unless user explicitly selects it
+    if (secRiskFilter === "all" && a.risk_level === "low") return false;  // hide Low by default
+    if (secRiskFilter !== "all" && a.risk_level !== secRiskFilter) return false;
+    return true;
+  });
 
   const filteredRenew = renewAlerts.filter((a) =>
     (renewTypeFilter === "all" || a.alert_type === renewTypeFilter) &&
@@ -779,7 +788,9 @@ export default function AlertsPage() {
                       : "bg-gray-800 border-gray-700 text-gray-500 hover:border-gray-600 hover:text-gray-300"
                   }`}
                 >
-                  {lvl === "all" ? "All Levels" : lvl.charAt(0).toUpperCase() + lvl.slice(1)}
+                {lvl === "all"  ? "All (excl. Low)"
+                  : lvl === "low" ? "Low ↓"
+                  : lvl.charAt(0).toUpperCase() + lvl.slice(1)}
                 </button>
               ))}
               <div className="flex-1" />

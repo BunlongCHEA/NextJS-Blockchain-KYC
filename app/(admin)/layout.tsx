@@ -1,5 +1,11 @@
+import { Metadata } from "next";
 import HamburgerSidebar from "@/components/layout/HamburgerSidebar";
 import TopBar from "@/components/layout/TopBar";
+
+// // Uses the template from root layout → "Admin | KYC Blockchain System"
+// export const metadata: Metadata = {
+//   title: "Admin",
+// };
 
 export default function AdminLayout({
   children,
