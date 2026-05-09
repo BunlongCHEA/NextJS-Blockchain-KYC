@@ -97,7 +97,7 @@ function safeSecAlertDate(v: string | number | null | undefined, fmt: string): s
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-type RiskLevel = "low" | "medium" | "high" | "critical";
+type RiskLevel = "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
 type ReviewAction = "acknowledged" | "dismissed" | "escalated" | "resolved";
 type DeliveryChannel = "email" | "webhook" | "both" | "none";
 type AlertInterval = "immediate" | "daily" | "weekly";
@@ -106,7 +106,8 @@ interface SecurityAlert {
   id:          string;
   user_id:     string;
   action:      string;
-  risk_level:  RiskLevel;
+  risk_level:     RiskLevel;               // "CRITICAL" | "HIGH" | "MEDIUM" | "LOW"
+  security_level: number;                  // 0=Critical 1=High 2=Medium 3=Low
   reviewed:    boolean;
   notes?:      string;
   created_at:  string | number;
@@ -143,10 +144,10 @@ interface RenewalAlert {
 // ─── Shared helpers ────────────────────────────────────────────────────────────
 
 const RISK_CFG: Record<RiskLevel, { label: string; color: string; dot: string; border: string }> = {
-  critical: { label: "Critical", color: "text-red-400",    dot: "bg-red-400",    border: "border-red-800/60"   },
-  high:     { label: "High",     color: "text-orange-400", dot: "bg-orange-400", border: "border-orange-800/60" },
-  medium:   { label: "Medium",   color: "text-amber-400",  dot: "bg-amber-400",  border: "border-amber-800/60"  },
-  low:      { label: "Low",      color: "text-blue-400",   dot: "bg-blue-400",   border: "border-blue-800/60"   },
+  CRITICAL: { label: "Critical", color: "text-red-400",    dot: "bg-red-400",    border: "border-red-800/60"   },
+  HIGH:     { label: "High",     color: "text-orange-400", dot: "bg-orange-400", border: "border-orange-800/60" },
+  MEDIUM:   { label: "Medium",   color: "text-amber-400",  dot: "bg-amber-400",  border: "border-amber-800/60"  },
+  LOW:      { label: "Low",      color: "text-blue-400",   dot: "bg-blue-400",   border: "border-blue-800/60"   },
 };
 
 const ALERT_TYPE_CFG = {
@@ -579,7 +580,7 @@ export default function AlertsPage() {
       } else {
         // Default: exclude Low to avoid display clutter.
         // User can still select "Low" explicitly from the filter buttons.
-        params.exclude_level = "low";
+        params.exclude_level = "LOW";
       }
       if (!secShowReviewed) params.reviewed = "false";
 
@@ -620,7 +621,7 @@ export default function AlertsPage() {
   const filteredSec = secAlerts.filter((a) => {
     if (!secShowReviewed && a.reviewed) return false;
     // Exclude Low unless user explicitly selects it
-    if (secRiskFilter === "all" && a.risk_level === "low") return false;  // hide Low by default
+    if (secRiskFilter === "all" && a.risk_level === "LOW") return false;  // hide Low by default
     if (secRiskFilter !== "all" && a.risk_level !== secRiskFilter) return false;
     return true;
   });
@@ -771,7 +772,7 @@ export default function AlertsPage() {
             <div className="flex items-center gap-2 flex-wrap">
               <Filter className="h-3.5 w-3.5 text-gray-600 shrink-0" />
               {/* Risk filter */}
-              {(["all","critical","high","medium","low"] as const).map((lvl) => (
+              {(["all", "CRITICAL", "HIGH", "MEDIUM", "LOW"] as const).map((lvl) => (
                 <button
                   key={lvl}
                   onClick={() => setSecRiskFilter(lvl)}
@@ -780,16 +781,16 @@ export default function AlertsPage() {
                       ? lvl === "all"
                         ? "bg-gray-700 border-gray-600 text-white"
                         : `border-current text-white ${
-                            lvl === "critical" ? "bg-red-900/50 border-red-700 text-red-300"
-                            : lvl === "high"   ? "bg-orange-900/50 border-orange-700 text-orange-300"
-                            : lvl === "medium" ? "bg-amber-900/50 border-amber-700 text-amber-300"
+                            lvl === "CRITICAL" ? "bg-red-900/50 border-red-700 text-red-300"
+                            : lvl === "HIGH"   ? "bg-orange-900/50 border-orange-700 text-orange-300"
+                            : lvl === "MEDIUM" ? "bg-amber-900/50 border-amber-700 text-amber-300"
                             : "bg-blue-900/50 border-blue-700 text-blue-300"
                           }`
                       : "bg-gray-800 border-gray-700 text-gray-500 hover:border-gray-600 hover:text-gray-300"
                   }`}
                 >
                 {lvl === "all"  ? "All (excl. Low)"
-                  : lvl === "low" ? "Low ↓"
+                  : lvl === "LOW" ? "Low ↓"
                   : lvl.charAt(0).toUpperCase() + lvl.slice(1)}
                 </button>
               ))}
@@ -825,7 +826,7 @@ export default function AlertsPage() {
                 ) : (
                   <div className="divide-y divide-gray-800/60">
                     {filteredSec.map((alert) => {
-                      const cfg = RISK_CFG[alert.risk_level] ?? RISK_CFG.low;
+                      const cfg = RISK_CFG[alert.risk_level] ?? RISK_CFG.LOW;
                       return (
                         <div
                           key={alert.id}
