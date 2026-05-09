@@ -108,10 +108,12 @@ interface SecurityAlert {
   action:      string;
   risk_level:     RiskLevel;               // "CRITICAL" | "HIGH" | "MEDIUM" | "LOW"
   security_level: number;                  // 0=Critical 1=High 2=Medium 3=Low
+  description?:   string;        // from monitoring service (may be absent for audit_log rows)
   reviewed:    boolean;
   notes?:      string;
   created_at:  string | number;
   details?:    Record<string, unknown>;
+  source?:     "monitoring" | "audit_log";
 }
 
 interface SecurityAlertSummary {
@@ -586,8 +588,17 @@ export default function AlertsPage() {
 
       const res = await api.get("/api/v1/security/alerts", { params });
       const data = res.data?.data;
-      setSecAlerts(Array.isArray(data?.alerts) ? data.alerts : []);
+
+      // Go returns "is_reviewed" — normalize to "reviewed" for our interface
+      const rawAlerts: any[] = Array.isArray(data?.alerts) ? data.alerts : [];
+      const normalized: SecurityAlert[] = rawAlerts.map((a) => ({
+        ...a,
+        reviewed: a.reviewed ?? a.is_reviewed ?? false,  // handle both field names
+      }));
+
+      setSecAlerts(normalized);
       if (data?.summary) setSecSummary(data.summary);
+      
     } catch { setSecAlerts([]); }
     finally { setSecLoading(false); }
   }, [secRiskFilter, secShowReviewed]);
