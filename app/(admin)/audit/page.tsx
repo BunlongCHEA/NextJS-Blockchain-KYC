@@ -30,15 +30,16 @@ import { format, formatDistanceToNow, parseISO } from "date-fns";
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 interface AuditLog {
-  id:            number;
-  user_id:       string;
-  action:        string;
-  resource_type: string;
-  resource_id:   string;
-  details:       Record<string, any>;
-  ip_address:    string;
-  user_agent:    string;
-  created_at:    string; // ISO timestamp from DB TIMESTAMP column
+  id:             number;
+  user_id:        string;
+  action:         string;
+  resource_type:  string;
+  resource_id:    string;
+  details:        Record<string, any>;
+  ip_address:     string;
+  user_agent:     string;
+  created_at:     string;
+  security_level: number | null; // 0=Critical 1=High 2=Medium 3=Low; null=legacy
 }
 
 // ─── Safe date helpers ────────────────────────────────────────────────────────
@@ -67,38 +68,59 @@ function safeAgo(v: string | number | null | undefined): string {
 
 // ─── Action config ────────────────────────────────────────────────────────────
 
-interface ActionCfg { color: string; priority: number }
-const ACTION_CFG: Record<string, ActionCfg> = {
-  LOGIN:                        { color: "bg-emerald-900/60 text-emerald-300 border-emerald-800",  priority: 1 },
-  LOGIN_FAILED:                 { color: "bg-red-900/60 text-red-300 border-red-800",              priority: 0 },
-  LOGOUT:                       { color: "bg-gray-800 text-gray-400 border-gray-700",              priority: 3 },
-  REGISTER:                     { color: "bg-blue-900/60 text-blue-300 border-blue-800",           priority: 1 },
-  PASSWORD_CHANGED:             { color: "bg-cyan-900/60 text-cyan-300 border-cyan-800",           priority: 1 },
-  USER_PASSWORD_RESET:          { color: "bg-orange-900/60 text-orange-300 border-orange-800",     priority: 1 },
-  KYC_CREATED:                  { color: "bg-violet-900/60 text-violet-300 border-violet-800",     priority: 2 },
-  KYC_VERIFIED:                 { color: "bg-emerald-900/60 text-emerald-300 border-emerald-800",  priority: 1 },
-  KYC_REJECTED:                 { color: "bg-red-900/60 text-red-300 border-red-800",              priority: 1 },
-  KYC_DELETED:                  { color: "bg-red-900/80 text-red-200 border-red-700",              priority: 0 },
-  KYC_AI_SCAN:                  { color: "bg-indigo-900/60 text-indigo-300 border-indigo-800",     priority: 2 },
-  KYC_READ:                     { color: "bg-gray-800 text-gray-400 border-gray-700",              priority: 3 },
-  KYC_LIST:                     { color: "bg-gray-800 text-gray-400 border-gray-700",              priority: 4 },
-  KYC_PERIODIC_REVIEW:          { color: "bg-amber-900/60 text-amber-300 border-amber-800",        priority: 1 },
-  CERTIFICATE_ISSUED:           { color: "bg-purple-900/60 text-purple-300 border-purple-800",     priority: 1 },
-  CERTIFICATE_VERIFIED:         { color: "bg-teal-900/60 text-teal-300 border-teal-800",           priority: 2 },
-  CERTIFICATE_LIST:             { color: "bg-gray-800 text-gray-400 border-gray-700",              priority: 4 },
-  REQUESTER_KEYPAIR_GENERATED:  { color: "bg-green-900/60 text-green-300 border-green-800",        priority: 1 },
-  REQUESTER_KEY_REVOKED:        { color: "bg-red-900/60 text-red-300 border-red-800",              priority: 0 },
-  REQUESTER_KEY_READ:           { color: "bg-gray-800 text-gray-400 border-gray-700",              priority: 4 },
-  BLOCK_MINED:                  { color: "bg-yellow-900/60 text-yellow-300 border-yellow-800",     priority: 2 },
-  ANOMALY_DETECTED:             { color: "bg-rose-900/80 text-rose-200 border-rose-700",           priority: 0 },
-  SECURITY_ALERT_REVIEWED:      { color: "bg-blue-900/60 text-blue-300 border-blue-800",           priority: 1 },
-  USER_CREATED:                 { color: "bg-sky-900/60 text-sky-300 border-sky-800",              priority: 1 },
-  USER_UPDATED:                 { color: "bg-sky-900/40 text-sky-400 border-sky-800",              priority: 2 },
-  USER_DELETED:                 { color: "bg-red-900/60 text-red-300 border-red-800",              priority: 0 },
-  AUDIT_LOG_READ:               { color: "bg-gray-800 text-gray-500 border-gray-700",              priority: 4 },
-};
-function getActionCfg(action: string): ActionCfg {
-  return ACTION_CFG[action] ?? { color: "bg-gray-800 text-gray-400 border-gray-700", priority: 3 };
+// interface ActionCfg { color: string; priority: number }
+// const ACTION_CFG: Record<string, ActionCfg> = {
+//   LOGIN:                        { color: "bg-emerald-900/60 text-emerald-300 border-emerald-800",  priority: 1 },
+//   LOGIN_FAILED:                 { color: "bg-red-900/60 text-red-300 border-red-800",              priority: 0 },
+//   LOGOUT:                       { color: "bg-gray-800 text-gray-400 border-gray-700",              priority: 3 },
+//   REGISTER:                     { color: "bg-blue-900/60 text-blue-300 border-blue-800",           priority: 1 },
+//   PASSWORD_CHANGED:             { color: "bg-cyan-900/60 text-cyan-300 border-cyan-800",           priority: 1 },
+//   USER_PASSWORD_RESET:          { color: "bg-orange-900/60 text-orange-300 border-orange-800",     priority: 1 },
+//   KYC_CREATED:                  { color: "bg-violet-900/60 text-violet-300 border-violet-800",     priority: 2 },
+//   KYC_VERIFIED:                 { color: "bg-emerald-900/60 text-emerald-300 border-emerald-800",  priority: 1 },
+//   KYC_REJECTED:                 { color: "bg-red-900/60 text-red-300 border-red-800",              priority: 1 },
+//   KYC_DELETED:                  { color: "bg-red-900/80 text-red-200 border-red-700",              priority: 0 },
+//   KYC_AI_SCAN:                  { color: "bg-indigo-900/60 text-indigo-300 border-indigo-800",     priority: 2 },
+//   KYC_READ:                     { color: "bg-gray-800 text-gray-400 border-gray-700",              priority: 3 },
+//   KYC_LIST:                     { color: "bg-gray-800 text-gray-400 border-gray-700",              priority: 4 },
+//   KYC_PERIODIC_REVIEW:          { color: "bg-amber-900/60 text-amber-300 border-amber-800",        priority: 1 },
+//   CERTIFICATE_ISSUED:           { color: "bg-purple-900/60 text-purple-300 border-purple-800",     priority: 1 },
+//   CERTIFICATE_VERIFIED:         { color: "bg-teal-900/60 text-teal-300 border-teal-800",           priority: 2 },
+//   CERTIFICATE_LIST:             { color: "bg-gray-800 text-gray-400 border-gray-700",              priority: 4 },
+//   REQUESTER_KEYPAIR_GENERATED:  { color: "bg-green-900/60 text-green-300 border-green-800",        priority: 1 },
+//   REQUESTER_KEY_REVOKED:        { color: "bg-red-900/60 text-red-300 border-red-800",              priority: 0 },
+//   REQUESTER_KEY_READ:           { color: "bg-gray-800 text-gray-400 border-gray-700",              priority: 4 },
+//   BLOCK_MINED:                  { color: "bg-yellow-900/60 text-yellow-300 border-yellow-800",     priority: 2 },
+//   ANOMALY_DETECTED:             { color: "bg-rose-900/80 text-rose-200 border-rose-700",           priority: 0 },
+//   SECURITY_ALERT_REVIEWED:      { color: "bg-blue-900/60 text-blue-300 border-blue-800",           priority: 1 },
+//   USER_CREATED:                 { color: "bg-sky-900/60 text-sky-300 border-sky-800",              priority: 1 },
+//   USER_UPDATED:                 { color: "bg-sky-900/40 text-sky-400 border-sky-800",              priority: 2 },
+//   USER_DELETED:                 { color: "bg-red-900/60 text-red-300 border-red-800",              priority: 0 },
+//   AUDIT_LOG_READ:               { color: "bg-gray-800 text-gray-500 border-gray-700",              priority: 4 },
+// };
+// function getActionCfg(action: string): ActionCfg {
+//   return ACTION_CFG[action] ?? { color: "bg-gray-800 text-gray-400 border-gray-700", priority: 3 };
+// }
+
+// ─── Security level helpers ────────────────────────────────────────────────
+
+// Maps security_level number (from API) → Tailwind badge classes
+function securityLevelColor(level: number | null | undefined): string {
+  switch (level) {
+    case 0:  return "bg-rose-900/80 text-rose-200 border-rose-700";    // Critical
+    case 1:  return "bg-orange-900/60 text-orange-300 border-orange-800"; // High
+    case 2:  return "bg-amber-900/50 text-amber-300 border-amber-800";  // Medium
+    default: return "bg-gray-800 text-gray-400 border-gray-700";        // Low / unknown
+  }
+}
+
+// Row highlight for Critical/High anomalies
+function securityLevelRowBg(level: number | null | undefined): string {
+  switch (level) {
+    case 0: return "bg-rose-950/20";
+    case 1: return "bg-orange-950/10";
+    default: return "";
+  }
 }
 
 // ─── Syslog config (persisted to localStorage) ───────────────────────────────
@@ -181,7 +203,8 @@ function UserIdBadge({ uid }: { uid: string }) {
 
 function DetailRow({ log }: { log: AuditLog }) {
   const [open, setOpen] = useState(false);
-  const cfg        = getActionCfg(log.action);
+  const badgeColor  = securityLevelColor(log.security_level);
+  const rowBg       = securityLevelRowBg(log.security_level);
   const isAnomaly  = log.action === "ANOMALY_DETECTED";
   const riskLevel  = log.details?.risk_level as string | undefined;
 
@@ -198,7 +221,7 @@ function DetailRow({ log }: { log: AuditLog }) {
           {open ? <ChevronDown className="h-3 w-3 text-gray-500"/> : <ChevronRight className="h-3 w-3 text-gray-600"/>}
         </TableCell>
         <TableCell className="py-2">
-          <Badge className={`text-xs border font-mono ${cfg.color}`}>{log.action}</Badge>
+          <Badge className={`text-xs border font-mono ${badgeColor}`}>{log.action}</Badge>
           {isAnomaly && riskLevel && (
             <span className={`ml-1.5 text-xs font-medium ${riskLevel==="CRITICAL"?"text-red-400":riskLevel==="HIGH"?"text-orange-400":"text-gray-500"}`}>
               {riskLevel}
@@ -380,8 +403,7 @@ export default function AuditPage() {
 
   // Apply all filters
   const filtered = allLogs.filter(l => {
-    const cfg = getActionCfg(l.action);
-    if (!showNoise   && cfg.priority >= 4) return false;
+    if (!showNoise && (l.security_level === null || l.security_level === undefined || l.security_level >= 3)) return false;
     if (!showAnomaly && l.action === "ANOMALY_DETECTED") return false;
     if (actionFilter   !== "all" && l.action         !== actionFilter)   return false;
     if (resourceFilter !== "all" && l.resource_type  !== resourceFilter) return false;
