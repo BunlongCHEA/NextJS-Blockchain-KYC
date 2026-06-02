@@ -117,6 +117,9 @@ const FEATURE_MAP: Record<Feature, RouteMap> = {
     reject:  { method: "POST", path: "/api/v1/kyc/reject"  },
     stats:   { method: "GET",  path: "/api/v1/kyc/stats"   },
     history: { method: "GET",  path: "/api/v1/kyc/history" },
+    external_verify: { method: "POST", path: "/api/v1/kyc/external-verify" },
+    suspend: { method: "POST", path: "/api/v1/kyc/suspend" },
+    expire:  { method: "POST", path: "/api/v1/kyc/expire"  },
   },
   users: {
     list:           { method: "GET",    path: "/api/v1/users/list"           },
@@ -157,6 +160,8 @@ function requiredScope(feature: Feature, action: string): Scope | null {
   if (feature === "kyc") {
     if (verify.includes(action)) return "kyc:verify";
     if (write.includes(action))  return "kyc:write";
+    if (action === "external_verify") return "kyc:verify";
+    if (action === "suspend" || action === "expire") return "kyc:verify";
     return "kyc:read";
   }
   if (feature === "users")        return write.includes(action) ? "users:write" : "users:read";
