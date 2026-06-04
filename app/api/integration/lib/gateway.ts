@@ -154,21 +154,121 @@ const FEATURE_MAP: Record<Feature, RouteMap> = {
 
 // ─── Scope per feature + action (unchanged) ───────────────────────────────────
 
+// function requiredScope(feature: Feature, action: string): Scope | null {
+//   const write  = ["create", "update", "delete", "reset_password"];
+//   const verify = ["verify", "reject", "auto_verify", "external_verify", "suspend", "expire"];  // kyc-only actionable statuses
+//   if (feature === "kyc") {
+//     if (verify.includes(action)) return "kyc:verify";
+//     if (write.includes(action))  return "kyc:write";
+//     // if (action === "external_verify") return "kyc:verify";
+//     // if (action === "suspend" || action === "expire") return "kyc:verify";
+//     return "kyc:read";
+//   }
+//   if (feature === "users")        return write.includes(action) ? "users:write" : "users:read";
+//   if (feature === "blockchain")   return action === "mine" ? "blockchain:mine" : "blockchain:read";
+//   if (feature === "banks")        return write.includes(action) ? "banks:write" : "banks:read";
+//   if (feature === "certificates") return action === "issue" ? "certificates:issue" : "certificates:verify";
+//   if (feature === "audit")        return "audit:read";
+//   return null;
+// }
+
 function requiredScope(feature: Feature, action: string): Scope | null {
-  const write  = ["create", "update", "delete", "reset_password"];
-  const verify = ["verify", "reject", "auto_verify"];
+
+  // ── kyc ──────────────────────────────────────────────────────────────────
   if (feature === "kyc") {
-    if (verify.includes(action)) return "kyc:verify";
-    if (write.includes(action))  return "kyc:write";
-    if (action === "external_verify") return "kyc:verify";
-    if (action === "suspend" || action === "expire") return "kyc:verify";
-    return "kyc:read";
+    switch (action) {
+      // read-only
+      case "list":
+      case "get":
+      case "stats":
+      case "history":
+        return "kyc:read";
+      // write (create / update)
+      case "create":
+      case "update":
+        return "kyc:write";
+      // verify-class actions (status changes + external check)
+      case "verify":
+      case "reject":
+      case "auto_verify":
+      case "external_verify":
+      case "suspend":
+      case "expire":
+        return "kyc:verify";
+      default:
+        return "kyc:read";
+    }
   }
-  if (feature === "users")        return write.includes(action) ? "users:write" : "users:read";
-  if (feature === "blockchain")   return action === "mine" ? "blockchain:mine" : "blockchain:read";
-  if (feature === "banks")        return write.includes(action) ? "banks:write" : "banks:read";
-  if (feature === "certificates") return action === "issue" ? "certificates:issue" : "certificates:verify";
-  if (feature === "audit")        return "audit:read";
+
+  // ── users ─────────────────────────────────────────────────────────────────
+  if (feature === "users") {
+    switch (action) {
+      case "list":
+        return "users:read";
+      case "create":
+      case "update":
+      case "delete":
+      case "reset_password":
+        return "users:write";
+      default:
+        return "users:read";
+    }
+  }
+
+  // ── blockchain ────────────────────────────────────────────────────────────
+  if (feature === "blockchain") {
+    switch (action) {
+      case "stats":
+      case "blocks":
+      case "block":
+      case "pending":
+      case "validate":
+        return "blockchain:read";
+      case "mine":
+        return "blockchain:mine";
+      default:
+        return "blockchain:read";
+    }
+  }
+
+  // ── banks ─────────────────────────────────────────────────────────────────
+  if (feature === "banks") {
+    switch (action) {
+      case "list":
+      case "get":
+        return "banks:read";
+      case "create":
+        return "banks:write";
+      default:
+        return "banks:read";
+    }
+  }
+
+  // ── certificates ──────────────────────────────────────────────────────────
+  if (feature === "certificates") {
+    switch (action) {
+      case "list":
+        return "certificates:verify";   // listing certs requires verify scope
+      case "issue":
+        return "certificates:issue";
+      case "verify":
+        return "certificates:verify";
+      default:
+        return "certificates:verify";
+    }
+  }
+
+  // ── audit ─────────────────────────────────────────────────────────────────
+  if (feature === "audit") {
+    switch (action) {
+      case "logs":
+      case "alerts":
+        return "audit:read";
+      default:
+        return "audit:read";
+    }
+  }
+
   return null;
 }
 
