@@ -18,6 +18,8 @@ import {
   FileText, Database, Blocks, BarChart3,
   ToggleLeft, ToggleRight, Activity, Info, Lock,
   User, Link2, AlertTriangle, CircleCheck, CircleX,
+  ChevronUp,
+  ChevronDown,
 } from "lucide-react";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Button }   from "@/components/ui/button";
@@ -89,6 +91,212 @@ const SCOPE_TO_NEXTJS_ROUTES: Record<Scope, string[]> = {
   "certificates:issue":  ["POST /api/integration/certificates  {action:issue}"],
   "certificates:verify": ["POST /api/integration/certificates  {action:verify|list}"],
   "audit:read":          ["POST /api/integration/audit  {action:logs|alerts}"],
+};
+
+const SCOPE_ACTIONS: Record<Scope, { action: string; method: string; desc: string }[]> = {
+  "kyc:read": [
+    { action: "list",    method: "GET", desc: "List KYC records (paginated, filterable by status)" },
+    { action: "get",     method: "GET", desc: "Fetch one record by customer_id with decrypted PII" },
+    { action: "stats",   method: "GET", desc: "Count records grouped by status" },
+    { action: "history", method: "GET", desc: "Blockchain transaction history for a customer" },
+  ],
+  "kyc:write": [
+    { action: "create", method: "POST", desc: "Submit a new KYC application" },
+    { action: "update", method: "PUT",  desc: "Update a non-verified KYC record" },
+  ],
+  "kyc:verify": [
+    { action: "verify",          method: "POST", desc: "Approve a PENDING KYC → adds to blockchain pool" },
+    { action: "reject",          method: "POST", desc: "Reject a PENDING KYC with a reason" },
+    { action: "external_verify", method: "POST", desc: "Look up by document number — CBS integration entry point" },
+    { action: "suspend",         method: "POST", desc: "Suspend a VERIFIED KYC (notifies CBS via webhook)" },
+    { action: "expire",          method: "POST", desc: "Mark a KYC as EXPIRED (notifies CBS via webhook)" },
+  ],
+  "users:read":  [
+    { action: "list", method: "GET", desc: "List all active bank-staff user accounts" },
+  ],
+  "users:write": [
+    { action: "create",         method: "POST",   desc: "Create a new bank user (forces password change on first login)" },
+    { action: "update",         method: "PATCH",  desc: "Toggle is_active, change role or bank assignment" },
+    { action: "delete",         method: "DELETE", desc: "Soft-delete a user (is_deleted=true, is_active=false)" },
+    { action: "reset_password", method: "POST",   desc: "Generate a temp password and set must_change_password" },
+  ],
+  "blockchain:read": [
+    { action: "stats",    method: "GET", desc: "Total blocks, pending tx count, chain validity flag" },
+    { action: "blocks",   method: "GET", desc: "Paginated block list (newest first)" },
+    { action: "block",    method: "GET", desc: "Single block by hash or index" },
+    { action: "pending",  method: "GET", desc: "Pending (unmined) transactions in the pool" },
+    { action: "validate", method: "GET", desc: "Full chain integrity validation" },
+  ],
+  "blockchain:mine": [
+    { action: "mine", method: "POST", desc: "Mine all pending transactions into a new block" },
+  ],
+  "banks:read": [
+    { action: "list", method: "GET", desc: "List all registered bank accounts" },
+    { action: "get",  method: "GET", desc: "Get one bank by bank_id" },
+  ],
+  "banks:write": [
+    { action: "create", method: "POST", desc: "Register a new bank in the system" },
+  ],
+  "certificates:issue":  [
+    { action: "issue", method: "POST", desc: "Issue a signed KYC verification certificate" },
+  ],
+  "certificates:verify": [
+    { action: "verify", method: "POST", desc: "Verify a certificate's ECDSA/RSA signature" },
+    { action: "list",   method: "GET",  desc: "List certificates issued to a requester" },
+  ],
+  "audit:read": [
+    { action: "logs",   method: "GET", desc: "Query audit log entries (user, action, date filters)" },
+    { action: "alerts", method: "GET", desc: "Security alerts from the monitoring service" },
+  ],
+};
+
+interface ActionSample { feature: string; body: object; response: object }
+const ACTION_SAMPLES: Record<string, ActionSample> = {
+  "kyc:list": {
+    feature: "kyc",
+    body:     { action: "list", params: { status: "PENDING", page: "1", per_page: "20" } },
+    response: { success: true, data: [{ customer_id: "CUSb8cb52ea78a0", first_name: "John", status: "PENDING", bank_id: "BANK00000002" }], page: 1, total_items: 1, _gateway: { action: "list", scope: "kyc:read" } },
+  },
+  "kyc:get": {
+    feature: "kyc",
+    body:     { action: "get", params: { customer_id: "CUSb8cb52ea78a0" } },
+    response: { success: true, data: { kyc_data: { customer_id: "CUSb8cb52ea78a0", status: "VERIFIED", first_name: "John", last_name: "Doe" }, on_blockchain: true, can_modify: false }, _gateway: { action: "get", scope: "kyc:read" } },
+  },
+  "kyc:stats": {
+    feature: "kyc",
+    body:     { action: "stats" },
+    response: { success: true, data: { total: 142, pending: 18, verified: 115, rejected: 7, suspended: 2, expired: 0 } },
+  },
+  "kyc:history": {
+    feature: "kyc",
+    body:     { action: "history", params: { customer_id: "CUSb8cb52ea78a0" } },
+    response: { success: true, data: [{ id: "TX-aab1", type: "KYC_CREATED", timestamp: 1748700000 }, { id: "TX-aab2", type: "KYC_VERIFIED", timestamp: 1748735121 }] },
+  },
+  "kyc:create": {
+    feature: "kyc",
+    body:     { action: "create", data: { first_name: "Jane", last_name: "Smith", date_of_birth: "1995-03-20", nationality: "KH", id_type: "national_id", id_number: "AB98765432", id_expiry_date: "2030-12-31", email: "jane@example.com", phone: "+85512345678", bank_id: "BANK00000002" } },
+    response: { success: true, message: "KYC created successfully - pending verification", data: { customer_id: "CUSd4f1a3b72c90", status: "PENDING", on_blockchain: false } },
+  },
+  "kyc:update": {
+    feature: "kyc",
+    body:     { action: "update", data: { customer_id: "CUSd4f1a3b72c90", email: "updated@example.com", phone: "+85598765432", description: "Email correction" } },
+    response: { success: true, message: "KYC updated successfully", data: { customer_id: "CUSd4f1a3b72c90", status: "PENDING", on_blockchain: false } },
+  },
+  "kyc:verify": {
+    feature: "kyc",
+    body:     { action: "verify", data: { customer_id: "CUSb8cb52ea78a0" } },
+    response: { success: true, message: "KYC verified - transaction created for blockchain", data: { customer_id: "CUSb8cb52ea78a0", status: "VERIFIED", pending_for_block: true } },
+  },
+  "kyc:reject": {
+    feature: "kyc",
+    body:     { action: "reject", data: { customer_id: "CUSb8cb52ea78a0", reason: "Identity document expired or illegible" } },
+    response: { success: true, message: "KYC rejected", data: { customer_id: "CUSb8cb52ea78a0", status: "REJECTED" } },
+  },
+  "kyc:external_verify": {
+    feature: "kyc",
+    body:     { action: "external_verify", data: { id_type: "national_id", id_number: "AB12345678", bank_id: "BANK00000002" } },
+    response: { success: true, message: "KYC verified successfully", data: { customer_id: "CUSb8cb52ea78a0", first_name: "John", last_name: "Doe", date_of_birth: "1990-01-15", status: "VERIFIED", bank_id: "BANK00000002", user_role: "customer", is_active: true, is_deleted: false } },
+  },
+  "kyc:suspend": {
+    feature: "kyc",
+    body:     { action: "suspend", data: { customer_id: "CUSb8cb52ea78a0", reason: "Suspicious account activity detected" } },
+    response: { success: true, message: "KYC suspended successfully", data: { customer_id: "CUSb8cb52ea78a0", status: "SUSPENDED" } },
+  },
+  "kyc:expire": {
+    feature: "kyc",
+    body:     { action: "expire", data: { customer_id: "CUSb8cb52ea78a0" } },
+    response: { success: true, message: "KYC expired successfully", data: { customer_id: "CUSb8cb52ea78a0", status: "EXPIRED" } },
+  },
+  "users:list": {
+    feature: "users",
+    body:     { action: "list" },
+    response: { success: true, data: { users: [{ id: "usr-001", username: "alice", email: "alice@bank.com", role: "bank_officer", bank_id: "BANK00000002", is_active: true }], count: 1 } },
+  },
+  "users:create": {
+    feature: "users",
+    body:     { action: "create", data: { username: "john.doe", email: "john@bank.com", password: "Sup3rSafe!Pass#2026", role: "bank_officer", bank_id: "BANK00000002" } },
+    response: { success: true, message: "user created successfully", data: { id: "usr-002", username: "john.doe", role: "bank_officer" } },
+  },
+  "users:update": {
+    feature: "users",
+    body:     { action: "update", data: { user_id: "usr-002", is_active: false } },
+    response: { success: true, message: "user updated successfully" },
+  },
+  "users:reset_password": {
+    feature: "users",
+    body:     { action: "reset_password", data: { user_id: "usr-002" } },
+    response: { success: true, message: "password reset successfully", data: { temp_password: "R@nd0mTemp#26", password_change_required: true } },
+  },
+  "blockchain:stats": {
+    feature: "blockchain",
+    body:     { action: "stats" },
+    response: { success: true, data: { total_blocks: 42, pending_transactions: 3, is_valid: true, total_kyc_on_chain: 115 } },
+  },
+  "blockchain:blocks": {
+    feature: "blockchain",
+    body:     { action: "blocks", params: { page: "1", per_page: "10" } },
+    response: { success: true, data: [{ index: 42, hash: "00a3f2e1…", timestamp: 1748735121, tx_count: 5 }], page: 1, total_items: 42 },
+  },
+  "blockchain:block": {
+    feature: "blockchain",
+    body:     { action: "block", params: { index: "42" } },
+    response: { success: true, data: { index: 42, hash: "00a3f2e1…", prev_hash: "00b9d4c3…", nonce: 1847, transactions: [] } },
+  },
+  "blockchain:pending": {
+    feature: "blockchain",
+    body:     { action: "pending" },
+    response: { success: true, data: [{ id: "TX-aab1", customer_id: "CUSb8cb52ea78a0", type: "KYC_VERIFIED", timestamp: 1748735100 }] },
+  },
+  "blockchain:validate": {
+    feature: "blockchain",
+    body:     { action: "validate" },
+    response: { success: true, data: { is_valid: true } },
+  },
+  "blockchain:mine": {
+    feature: "blockchain",
+    body:     { action: "mine" },
+    response: { success: true, message: "block mined successfully", data: { index: 43, hash: "00c4d8f2…", nonce: 2341, tx_count: 3 } },
+  },
+  "banks:list": {
+    feature: "banks",
+    body:     { action: "list" },
+    response: { success: true, data: [{ id: "BANK00000002", name: "Main Branch", country: "KH", is_active: true }] },
+  },
+  "banks:get": {
+    feature: "banks",
+    body:     { action: "get", params: { bank_id: "BANK00000002" } },
+    response: { success: true, data: { id: "BANK00000002", name: "Main Branch", code: "MB001", country: "KH", is_active: true } },
+  },
+  "banks:create": {
+    feature: "banks",
+    body:     { action: "create", data: { name: "Siem Reap Branch", code: "SR001", country: "KH", license_no: "NBC-SR-2026" } },
+    response: { success: true, message: "bank registered successfully", data: { id: "BANK00000003", name: "Siem Reap Branch", is_active: true } },
+  },
+  "certificates:issue": {
+    feature: "certificates",
+    body:     { action: "issue", data: { customer_id: "CUSb8cb52ea78a0", requester_id: "CBS-PROD-001", validity_days: 365 } },
+    response: { success: true, message: "Verification certificate issued successfully", data: { certificate: { certificate_id: "CERT-a1b2c3…", status: "VERIFIED", expires_at: 1780271121, key_type: "ECDSA" }, validity_info: { requested_days: 365, actual_days: 290 } } },
+  },
+  "certificates:verify": {
+    feature: "certificates",
+    body:     { action: "verify", data: { certificate: { certificate_id: "CERT-a1b2c3…", customer_id: "CUSb8cb52ea78a0", status: "VERIFIED", signature: "MEQ…", issuer_public_key: "-----BEGIN PUBLIC KEY-----\nMFkwEw…\n-----END PUBLIC KEY-----", expires_at: 1780271121 } } },
+    response: { success: true, message: "Certificate verification successful", data: { valid: true, is_expired: false, current_status_match: true } },
+  },
+  "certificates:list": {
+    feature: "certificates",
+    body:     { action: "list", params: { requester_id: "CBS-PROD-001", limit: "50" } },
+    response: { success: true, data: [{ certificate_id: "CERT-a1b2c3…", customer_id: "CUSb8cb52ea78a0", status: "VERIFIED", expires_at: 1780271121, is_active: true }] },
+  },
+  "audit:logs": {
+    feature: "audit",
+    body:     { action: "logs", params: { limit: "50", action: "KYC_VERIFIED", start_date: "2026-06-01", end_date: "2026-06-05" } },
+    response: { success: true, data: { logs: [{ id: 1, action: "KYC_VERIFIED", user_id: "usr-001", resource_type: "KYC", resource_id: "CUSb8cb52ea78a0", ip_address: "192.168.1.10", created_at: "2026-06-05T10:00:00Z" }], count: 1 } },
+  },
+  "audit:alerts": {
+    feature: "audit",
+    body:     { action: "alerts", params: { risk_level: "HIGH", days: "7" } },
+    response: { success: true, data: { alerts: [{ id: "AULOG_1", action: "LOGIN_FAILED", risk_level: "HIGH", user_id: "anon:192.168.1.1", created_at: "2026-06-05T09:00:00Z", source: "audit_log" }], count: 1, summary: { critical: 0, high: 1, medium: 0 } } },
+  },
 };
 
 const GO_ROLE_SCOPES: Record<string, Scope[]> = {
@@ -281,6 +489,28 @@ function ScopePicker({ value, onChange }: { value: Scope[]; onChange: (s: Scope[
 }
 
 // ─── Service Account Dialog ───────────────────────────────────────────────────
+const METHOD_COLOR: Record<string, string> = {
+  GET:    "bg-green-900/30 text-green-400 border border-green-800/40",
+  POST:   "bg-blue-900/30 text-blue-400 border border-blue-800/40",
+  PUT:    "bg-amber-900/30 text-amber-400 border border-amber-800/40",
+  PATCH:  "bg-orange-900/30 text-orange-400 border border-orange-800/40",
+  DELETE: "bg-red-900/30 text-red-400 border border-red-800/40",
+};
+
+const SCOPE_BADGE_COLOR: Record<string, string> = {
+  "kyc:read":             "bg-cyan-900/40 text-cyan-300 border-cyan-800",
+  "kyc:write":            "bg-blue-900/40 text-blue-300 border-blue-800",
+  "kyc:verify":           "bg-indigo-900/40 text-indigo-300 border-indigo-800",
+  "users:read":           "bg-violet-900/40 text-violet-300 border-violet-800",
+  "users:write":          "bg-purple-900/40 text-purple-300 border-purple-800",
+  "blockchain:read":      "bg-amber-900/40 text-amber-300 border-amber-800",
+  "blockchain:mine":      "bg-orange-900/40 text-orange-300 border-orange-800",
+  "banks:read":           "bg-green-900/40 text-green-300 border-green-800",
+  "banks:write":          "bg-emerald-900/40 text-emerald-300 border-emerald-800",
+  "certificates:issue":   "bg-pink-900/40 text-pink-300 border-pink-800",
+  "certificates:verify":  "bg-rose-900/40 text-rose-300 border-rose-800",
+  "audit:read":           "bg-red-900/40 text-red-300 border-red-800",
+};
 
 function ServiceAccountDialog({
   integrationKey, onClose,
@@ -288,148 +518,317 @@ function ServiceAccountDialog({
   integrationKey: IntegrationKey;
   onClose: () => void;
 }) {
+  const [tab, setTab]           = useState<"account" | "coverage" | "samples">("account");
+  const [openGroups, setOpenGroups] = useState<Set<string>>(new Set());
+  // For samples tab: selected scope:action key
+  const [selectedSample, setSelectedSample] = useState<string>("");
+  const [copiedBlock, setCopiedBlock]       = useState<"req" | "res" | "curl" | null>(null);
+ 
   const svc    = checkServiceAccountCoverage(integrationKey.scopes);
   const groups = SCOPE_DEFS.reduce<Record<string, ScopeDef[]>>((acc, d) => {
     (acc[d.group] ??= []).push(d);
     return acc;
   }, {});
-
+ 
+  // Build the list of available samples for this key's scopes
+  const availableSamples = integrationKey.scopes.flatMap((scope) => {
+    const actions = SCOPE_ACTIONS[scope] ?? [];
+    return actions.map((a) => {
+      const key = `${scope.split(":")[0]}:${a.action}`;
+      return { key, label: `${scope} → ${a.action}`, scope, action: a.action, sample: ACTION_SAMPLES[key] };
+    }).filter((x) => x.sample);
+  });
+ 
+  // Default to first available sample when tab opens
+  useEffect(() => {
+    if (tab === "samples" && !selectedSample && availableSamples.length > 0) {
+      setSelectedSample(availableSamples[0].key);
+    }
+  }, [tab]);
+ 
+  const currentSample = availableSamples.find((s) => s.key === selectedSample);
+ 
+  const copyText = (text: string, block: "req" | "res" | "curl") => {
+    navigator.clipboard.writeText(text);
+    setCopiedBlock(block);
+    setTimeout(() => setCopiedBlock(null), 1500);
+  };
+ 
+  const baseUrl = typeof window !== "undefined" ? window.location.origin : "http://localhost:3000";
+ 
+  const toggleGroup = (g: string) =>
+    setOpenGroups((prev) => { const n = new Set(prev); n.has(g) ? n.delete(g) : n.add(g); return n; });
+ 
   return (
     <Dialog open onOpenChange={onClose}>
-      <DialogContent className="bg-gray-900 border-gray-800 text-white max-w-2xl max-h-[90vh] overflow-y-auto">
-        <DialogHeader>
-          <DialogTitle className="flex items-center gap-2">
+      <DialogContent className="bg-gray-900 border-gray-800 text-white max-w-2xl max-h-[90vh] overflow-hidden flex flex-col">
+        <DialogHeader className="shrink-0">
+          <DialogTitle className="flex items-center gap-2 text-base">
             <User className="h-4 w-4 text-cyan-400" />
-            Service Account — <span className="text-cyan-400 font-mono">{integrationKey.name}</span>
+            Service Account
+            <span className="text-cyan-400 font-mono">— {integrationKey.name}</span>
           </DialogTitle>
           <DialogDescription className="text-xs text-gray-500">
-            Which Go service account powers this key, scope coverage, and sample requests.
+            Go service account coverage, action reference, and ready-to-use sample requests.
           </DialogDescription>
         </DialogHeader>
-
-        <div className="space-y-5 mt-1">
-
-          {/* Service Account Info */}
-          <div className={`rounded-lg border px-4 py-3 ${svc.allCovered ? "bg-emerald-950/30 border-emerald-800/40" : "bg-amber-950/30 border-amber-800/40"}`}>
-            <div className="flex items-center gap-2 mb-2">
-              {svc.allCovered
-                ? <CircleCheck  className="h-4 w-4 text-emerald-400" />
-                : <AlertTriangle className="h-4 w-4 text-amber-400" />}
-              <p className="text-sm font-semibold text-white">
-                {svc.allCovered ? "Service account covers all scopes" : "Service account missing some scopes"}
-              </p>
-            </div>
-            <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-xs mt-2">
-              <div className="flex justify-between">
-                <span className="text-gray-500">Username</span>
-                <code className="text-cyan-400">{svc.username}</code>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-gray-500">Go Role</span>
-                <code className="text-cyan-400">{svc.role}</code>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-gray-500">Scopes covered</span>
-                <span className="text-emerald-400">{svc.coveredScopes.length} / {integrationKey.scopes.length}</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-gray-500">Env var</span>
-                <code className="text-gray-400">INTEGRATION_SERVICE_USER</code>
-              </div>
-            </div>
-            {svc.missingScopes.length > 0 && (
-              <div className="mt-2 pt-2 border-t border-amber-800/30">
-                <p className="text-xs text-amber-400 mb-1">⚠ Missing scopes — Go role lacks permission:</p>
-                <div className="flex flex-wrap gap-1">
-                  {svc.missingScopes.map((s) => (
-                    <span key={s} className="text-xs bg-amber-950/50 border border-amber-800/50 text-amber-300 px-1.5 py-0.5 rounded font-mono">{s}</span>
+ 
+        {/* ── Tab bar ───────────────────────────────────────────────────── */}
+        <div className="flex gap-1 border-b border-gray-800 pb-0 shrink-0">
+          {([
+            { id: "account",  label: "Account Info" },
+            { id: "coverage", label: `Scope Coverage (${integrationKey.scopes.length})` },
+            { id: "samples",  label: `Sample Requests (${availableSamples.length})` },
+          ] as const).map((t) => (
+            <button
+              key={t.id}
+              onClick={() => setTab(t.id)}
+              className={`px-3 py-2 text-xs font-medium border-b-2 transition-colors ${
+                tab === t.id
+                  ? "border-cyan-500 text-cyan-400"
+                  : "border-transparent text-gray-500 hover:text-gray-300"
+              }`}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
+ 
+        {/* ── Tab content (scrollable) ──────────────────────────────────── */}
+        <div className="flex-1 overflow-y-auto min-h-0 space-y-4 pt-3">
+ 
+          {/* ── ACCOUNT INFO ──────────────────────────────────────────────── */}
+          {tab === "account" && (
+            <>
+              <div className={`rounded-lg border px-4 py-3 ${svc.allCovered ? "bg-emerald-950/30 border-emerald-800/40" : "bg-amber-950/30 border-amber-800/40"}`}>
+                <div className="flex items-center gap-2 mb-2">
+                  {svc.allCovered
+                    ? <CircleCheck  className="h-4 w-4 text-emerald-400" />
+                    : <AlertTriangle className="h-4 w-4 text-amber-400" />}
+                  <p className="text-sm font-semibold text-white">
+                    {svc.allCovered ? "Service account covers all scopes" : "Service account missing some scopes"}
+                  </p>
+                </div>
+                <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-xs mt-2">
+                  {[
+                    ["Username",      <code key="u" className="text-cyan-400">{svc.username}</code>],
+                    ["Go Role",       <code key="r" className="text-cyan-400">{svc.role}</code>],
+                    ["Scopes covered",<span key="s" className="text-emerald-400">{svc.coveredScopes.length} / {integrationKey.scopes.length}</span>],
+                    ["Env var",       <code key="e" className="text-gray-400">INTEGRATION_SERVICE_USER</code>],
+                  ].map(([label, val]) => (
+                    <div key={String(label)} className="flex justify-between items-center py-0.5">
+                      <span className="text-gray-500">{label}</span>
+                      {val}
+                    </div>
                   ))}
                 </div>
-                <p className="text-xs text-amber-500/70 mt-1.5">
-                  Fix: change service account role to <code className="text-amber-400">integration_service</code> or <code className="text-amber-400">admin</code>
-                </p>
+                {svc.missingScopes.length > 0 && (
+                  <div className="mt-2 pt-2 border-t border-amber-800/30">
+                    <p className="text-xs text-amber-400 mb-1">⚠ Missing scopes — Go role lacks permission:</p>
+                    <div className="flex flex-wrap gap-1">
+                      {svc.missingScopes.map((s) => (
+                        <span key={s} className="text-xs bg-amber-950/50 border border-amber-800/50 text-amber-300 px-1.5 py-0.5 rounded font-mono">{s}</span>
+                      ))}
+                    </div>
+                    <p className="text-xs text-amber-500/70 mt-1.5">
+                      Fix: set service account role to <code className="text-amber-400">integration_service</code> or <code className="text-amber-400">admin</code>
+                    </p>
+                  </div>
+                )}
               </div>
-            )}
-          </div>
-
-          {/* Coverage table by group */}
-          <div>
-            <p className="text-xs text-gray-500 uppercase tracking-wider mb-2">Scope Coverage by Feature</p>
+ 
+              {/* How it works */}
+              <div className="rounded-lg bg-gray-800/40 border border-gray-700/50 px-4 py-3 text-xs text-gray-400 space-y-1.5">
+                <p className="text-gray-300 font-medium">Authentication flow</p>
+                <p>External system sends <code className="text-cyan-400">Authorization: Bearer kyk_…</code> to <code className="text-cyan-400">/api/integration/&lt;feature&gt;</code>.</p>
+                <p>Next.js SHA-256 hashes the key, looks it up in PostgreSQL, checks scopes, then proxies to Go using the <code className="text-cyan-400">{svc.username}</code> JWT.</p>
+                <p>The JWT is auto-refreshed from env <code className="text-cyan-400">INTEGRATION_SERVICE_USER / PASS</code> when it expires.</p>
+              </div>
+            </>
+          )}
+ 
+          {/* ── SCOPE COVERAGE ────────────────────────────────────────────── */}
+          {tab === "coverage" && (
             <div className="space-y-2">
               {Object.entries(groups).map(([group, defs]) => {
-                const keyHas = defs.filter((d) => integrationKey.scopes.includes(d.id));
+                const keyHas  = defs.filter((d) => integrationKey.scopes.includes(d.id));
                 if (keyHas.length === 0) return null;
                 const colorCls = GROUP_COLORS[group] ?? "bg-gray-800/60 border-gray-700 text-gray-300";
+                const isOpen   = openGroups.has(group);
+                const totalActions = keyHas.reduce((n, d) => n + (SCOPE_ACTIONS[d.id]?.length ?? 0), 0);
+ 
                 return (
-                  <div key={group} className={`rounded-lg border px-3 py-2 ${colorCls}`}>
-                    <p className="text-xs font-semibold mb-1.5">{group}</p>
-                    <div className="space-y-1">
-                      {keyHas.map((d) => {
-                        const covered = svc.coveredScopes.includes(d.id);
-                        const routes  = SCOPE_TO_NEXTJS_ROUTES[d.id] ?? [];
-                        return (
-                          <div key={d.id}>
-                            <div className="flex items-center gap-1.5">
+                  <div key={group} className={`rounded-xl border overflow-hidden ${colorCls}`}>
+                    {/* Group header — clickable */}
+                    <button
+                      onClick={() => toggleGroup(group)}
+                      className="w-full flex items-center justify-between px-3.5 py-2.5 hover:bg-white/5 transition-colors"
+                    >
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-semibold">{group}</span>
+                        <span className="text-xs opacity-60">{totalActions} actions</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        {keyHas.map((d) => {
+                          const covered = svc.coveredScopes.includes(d.id);
+                          return (
+                            <div key={d.id} className="flex items-center gap-1">
                               {covered
-                                ? <CircleCheck className="h-3 w-3 text-emerald-400 shrink-0" />
-                                : <CircleX     className="h-3 w-3 text-red-400 shrink-0" />}
-                              <span className="text-xs">{d.label}</span>
+                                ? <CircleCheck  className="h-3 w-3 text-emerald-400" />
+                                : <CircleX      className="h-3 w-3 text-red-400" />}
+                              <span className="text-xs font-mono opacity-80">{d.id.split(":")[1]}</span>
                             </div>
-                            {routes.map((r) => (
-                              <div key={r} className="ml-5 mt-0.5">
-                                <code className="text-xs text-gray-500 font-mono">{r}</code>
+                          );
+                        })}
+                        {isOpen
+                          ? <ChevronUp   className="h-3.5 w-3.5 opacity-50 ml-1" />
+                          : <ChevronDown className="h-3.5 w-3.5 opacity-50 ml-1" />}
+                      </div>
+                    </button>
+ 
+                    {/* Expanded action rows */}
+                    {isOpen && (
+                      <div className="border-t border-white/10">
+                        {keyHas.map((d) => {
+                          const actions = SCOPE_ACTIONS[d.id] ?? [];
+                          const covered = svc.coveredScopes.includes(d.id);
+                          const routes  = SCOPE_TO_NEXTJS_ROUTES[d.id] ?? [];
+                          return (
+                            <div key={d.id} className="border-b border-white/5 last:border-0">
+                              {/* Scope label row */}
+                              <div className="flex items-center gap-2 px-3.5 py-1.5 bg-black/10">
+                                {covered
+                                  ? <CircleCheck  className="h-3 w-3 text-emerald-400 shrink-0" />
+                                  : <CircleX      className="h-3 w-3 text-red-400 shrink-0" />}
+                                <span className="text-xs font-mono font-semibold">{d.id}</span>
+                                <span className="text-xs opacity-50 ml-auto truncate">
+                                  {routes[0]}
+                                </span>
                               </div>
-                            ))}
-                          </div>
-                        );
-                      })}
-                    </div>
+                              {/* Individual actions */}
+                              {actions.map((a) => (
+                                <div key={a.action}
+                                  className="flex items-start gap-2.5 px-6 py-1.5 hover:bg-white/5 group">
+                                  <span className={`text-xs px-1.5 py-0.5 rounded font-mono font-semibold shrink-0 w-[44px] text-center ${METHOD_COLOR[a.method] ?? ""}`}>
+                                    {a.method}
+                                  </span>
+                                  <span className="font-mono text-xs text-white w-[130px] shrink-0">{a.action}</span>
+                                  <span className="text-xs opacity-50 group-hover:opacity-80 transition-opacity">{a.desc}</span>
+                                </div>
+                              ))}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
                   </div>
                 );
               })}
+              <p className="text-xs text-gray-600 pt-1">
+                Click any feature group to expand all actions. ✓ = covered by service account role.
+              </p>
             </div>
-          </div>
-
-          {/* Postman samples */}
-          <div>
-            <p className="text-xs text-gray-500 uppercase tracking-wider mb-2">Sample Requests</p>
-            <div className="space-y-2">
-              {integrationKey.scopes.slice(0, 4).map((scope) => {
-                const [feature, action] = scope.split(":");
-                const sampleAction =
-                  action === "read"   ? "list"   :
-                  action === "write"  ? "create" :
-                  action === "verify" ? "verify" :
-                  action === "mine"   ? "mine"   :
-                  action === "issue"  ? "issue"  : "list";
-                const feat = ["kyc","users","blockchain","banks","audit"].includes(feature)
-                  ? feature : "certificates";
+          )}
+ 
+          {/* ── SAMPLE REQUESTS ───────────────────────────────────────────── */}
+          {tab === "samples" && (
+            <div className="space-y-3">
+              {/* Action picker */}
+              <div className="space-y-1.5">
+                <label className="text-xs text-gray-500 uppercase tracking-wider">Select action</label>
+                <Select value={selectedSample} onValueChange={setSelectedSample}>
+                  <SelectTrigger className="bg-gray-800 border-gray-700 text-gray-300 text-sm h-9">
+                    <SelectValue placeholder="Pick an action…" />
+                  </SelectTrigger>
+                  <SelectContent className="bg-gray-900 border-gray-800 max-h-64">
+                    {availableSamples.map((s) => (
+                      <SelectItem key={s.key} value={s.key} className="text-gray-300 text-xs">
+                        <span className="font-mono text-cyan-400">{s.scope}</span>
+                        <span className="text-gray-500 mx-1.5">→</span>
+                        <span className="font-mono">{s.action}</span>
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+ 
+              {currentSample && currentSample.sample && (() => {
+                const { feature, body, response } = currentSample.sample;
+                const reqStr  = JSON.stringify(body,     null, 2);
+                const resStr  = JSON.stringify(response, null, 2);
+                const curlStr = `curl -X POST ${baseUrl}/api/integration/${feature} \\\n  -H "Authorization: Bearer ${integrationKey.key_prefix}…" \\\n  -H "Content-Type: application/json" \\\n  -d '${JSON.stringify(body)}'`;
+ 
                 return (
-                  <div key={scope} className="bg-gray-950 rounded-lg border border-gray-800 p-3">
-                    <div className="flex items-center gap-2 mb-2">
-                      <span className="text-xs bg-cyan-900/40 border border-cyan-800/40 text-cyan-400 px-1.5 py-0.5 rounded">POST</span>
-                      <code className="text-xs text-gray-300">/api/integration/{feat}</code>
-                      <span className="ml-auto text-xs text-gray-600">{scope}</span>
+                  <div className="space-y-3">
+                    {/* Scope + endpoint */}
+                    <div className="flex items-center gap-2 text-xs">
+                      <span className="bg-blue-900/30 text-blue-400 border border-blue-800/40 px-2 py-0.5 rounded font-mono">POST</span>
+                      <code className="text-gray-300">{baseUrl}/api/integration/{feature}</code>
+                      <span className={`ml-auto px-2 py-0.5 rounded-full border font-mono text-xs ${
+                        SCOPE_BADGE_COLOR?.[currentSample.scope] ?? "bg-gray-800 text-gray-400 border-gray-700"
+                      }`}>{currentSample.scope}</span>
                     </div>
-                    <pre className="text-xs text-emerald-400 font-mono whitespace-pre">{JSON.stringify({
-                      action: sampleAction,
-                      ...(sampleAction === "list"   ? { params: { page: "1", per_page: "10" } } : {}),
-                      ...(["verify","create"].includes(sampleAction) ? { data: { customer_id: "CUST-abc123" } } : {}),
-                    }, null, 2)}</pre>
+ 
+                    {/* Request */}
+                    <div>
+                      <div className="flex items-center justify-between mb-1">
+                        <p className="text-xs text-gray-500 font-medium">Request body</p>
+                        <button onClick={() => copyText(reqStr, "req")}
+                          className={`flex items-center gap-1 text-xs px-2 py-0.5 rounded transition-colors ${copiedBlock === "req" ? "text-green-400" : "text-gray-500 hover:text-gray-300"}`}>
+                          {copiedBlock === "req" ? <><CheckCircle2 className="h-3 w-3" /> Copied</> : <><Copy className="h-3 w-3" /> Copy</>}
+                        </button>
+                      </div>
+                      <pre className="bg-gray-950 border border-gray-800 rounded-lg p-3 text-xs text-emerald-400 font-mono overflow-x-auto whitespace-pre">
+                        {reqStr}
+                      </pre>
+                    </div>
+ 
+                    {/* Response */}
+                    <div>
+                      <div className="flex items-center justify-between mb-1">
+                        <p className="text-xs text-gray-500 font-medium">Response (200 OK)</p>
+                        <button onClick={() => copyText(resStr, "res")}
+                          className={`flex items-center gap-1 text-xs px-2 py-0.5 rounded transition-colors ${copiedBlock === "res" ? "text-green-400" : "text-gray-500 hover:text-gray-300"}`}>
+                          {copiedBlock === "res" ? <><CheckCircle2 className="h-3 w-3" /> Copied</> : <><Copy className="h-3 w-3" /> Copy</>}
+                        </button>
+                      </div>
+                      <pre className="bg-gray-950 border border-gray-800 rounded-lg p-3 text-xs text-cyan-400 font-mono overflow-x-auto whitespace-pre">
+                        {resStr}
+                      </pre>
+                    </div>
+ 
+                    {/* curl */}
+                    <div>
+                      <div className="flex items-center justify-between mb-1">
+                        <p className="text-xs text-gray-500 font-medium">curl</p>
+                        <button onClick={() => copyText(curlStr, "curl")}
+                          className={`flex items-center gap-1 text-xs px-2 py-0.5 rounded transition-colors ${copiedBlock === "curl" ? "text-green-400" : "text-gray-500 hover:text-gray-300"}`}>
+                          {copiedBlock === "curl" ? <><CheckCircle2 className="h-3 w-3" /> Copied</> : <><Copy className="h-3 w-3" /> Copy</>}
+                        </button>
+                      </div>
+                      <pre className="bg-gray-950 border border-gray-800 rounded-lg p-3 text-xs text-gray-300 font-mono overflow-x-auto whitespace-pre">
+                        {curlStr}
+                      </pre>
+                    </div>
                   </div>
                 );
-              })}
+              })()}
+ 
+              {availableSamples.length === 0 && (
+                <div className="text-center py-8 text-gray-600 text-sm">
+                  No scopes assigned to this key — no samples available.
+                </div>
+              )}
             </div>
-            <p className="text-xs text-gray-600 mt-2">
-              Header: <code className="text-gray-500">Authorization: Bearer kyk_…</code>
-            </p>
-          </div>
+          )}
         </div>
-
-        <Button onClick={onClose} className="w-full mt-2 bg-gray-800 hover:bg-gray-700 text-white">Close</Button>
+ 
+        <Button onClick={onClose} className="w-full mt-3 bg-gray-800 hover:bg-gray-700 text-white shrink-0">
+          Close
+        </Button>
       </DialogContent>
     </Dialog>
-  );
+  );  
 }
 
 // ─── New Integration Key Dialog ───────────────────────────────────────────────
