@@ -3,20 +3,26 @@
 import { useEffect, useState, useCallback } from "react";
 import {
   Cpu, Layers, Clock, CheckCircle2, RefreshCw, Pickaxe,
-  ChevronDown, ChevronUp, Hash, User, Building2, Calendar,
-  ArrowRight, AlertTriangle, Loader2, Filter, Search,
-  Blocks, TrendingUp, Zap, ShieldCheck,
+  ChevronDown, ChevronUp, AlertTriangle, Loader2, Filter, Search,
+  Blocks, TrendingUp, ShieldCheck, Trash2, X,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
-  Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
-} from "@/components/ui/table";
-import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import api from "@/lib/api";
 import { format, formatDistanceToNow } from "date-fns";
 import { useToast } from "@/components/ui/use-toast";
@@ -71,32 +77,39 @@ interface PaginatedBlocksResponse {
   total_pages: number;
 }
 
+// Confirmation dialog shape — passed down so the page owns one shared dialog
+interface ConfirmOptions {
+  title: string;
+  description: string;
+  confirmLabel?: string;
+  onConfirm: () => void;
+}
+ 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
-
+ 
 const TX_TYPE_CONFIG: Record<string, { color: string; label: string }> = {
-  CREATE:  { color: "bg-blue-900/60 text-blue-300 border-blue-800",    label: "Create"  },
-  VERIFY:  { color: "bg-green-900/60 text-green-300 border-green-800", label: "Verify"  },
-  REJECT:  { color: "bg-red-900/60 text-red-300 border-red-800",       label: "Reject"  },
-  UPDATE:  { color: "bg-cyan-900/60 text-cyan-300 border-cyan-800",    label: "Update"  },
-  DELETE:  { color: "bg-gray-700/60 text-gray-300 border-gray-600",    label: "Delete"  },
+  CREATE:  { color: "bg-blue-900/60 text-blue-300 border-blue-800",       label: "Create"  },
+  VERIFY:  { color: "bg-green-900/60 text-green-300 border-green-800",    label: "Verify"  },
+  REJECT:  { color: "bg-red-900/60 text-red-300 border-red-800",          label: "Reject"  },
+  UPDATE:  { color: "bg-cyan-900/60 text-cyan-300 border-cyan-800",       label: "Update"  },
+  DELETE:  { color: "bg-gray-700/60 text-gray-300 border-gray-600",       label: "Delete"  },
   SUSPEND: { color: "bg-orange-900/60 text-orange-300 border-orange-800", label: "Suspend" },
 };
-
+ 
 function TxTypeBadge({ type }: { type: string }) {
-  const cfg = TX_TYPE_CONFIG[type] ?? { color: "bg-gray-700 text-gray-300 border-gray-600", label: type };
+  const cfg = TX_TYPE_CONFIG[type] ?? {
+    color: "bg-gray-700 text-gray-300 border-gray-600",
+    label: type,
+  };
   return (
     <span className={`inline-flex text-xs px-2 py-0.5 rounded-full border font-medium ${cfg.color}`}>
       {cfg.label}
     </span>
   );
 }
-
+ 
 function StatCard({
-  icon: Icon,
-  label,
-  value,
-  sub,
-  accent,
+  icon: Icon, label, value, sub, accent,
 }: {
   icon: React.ElementType;
   label: string;
@@ -117,37 +130,87 @@ function StatCard({
     </div>
   );
 }
-
+ 
 // ─── Pending Transaction Row ──────────────────────────────────────────────────
-
-function PendingTxRow({ tx }: { tx: Transaction }) {
+ 
+function PendingTxRow({
+  tx,
+  onConfirm,
+}: {
+  tx: Transaction;
+  onConfirm: (opts: ConfirmOptions) => void;
+}) {
   const [open, setOpen] = useState(false);
+ 
   return (
-    <div className="border border-gray-800 rounded-lg overflow-hidden">
-      <button
-        onClick={() => setOpen((o) => !o)}
-        className="w-full flex items-center gap-3 px-4 py-3 hover:bg-gray-800/40 transition-colors text-left"
-      >
-        <TxTypeBadge type={tx.type} />
-        <div className="flex-1 min-w-0">
-          <p className="text-sm text-white font-mono truncate">{tx.customer_id}</p>
-          <p className="text-xs text-gray-500 mt-0.5">
-            {tx.description || `${tx.type} transaction`}
-          </p>
+    <div className="border border-gray-800 rounded-lg overflow-hidden group">
+      {/* ── Collapsed header ──────────────────────────────── */}
+      <div className="flex items-center gap-3 px-4 py-3 hover:bg-gray-800/40 transition-colors">
+        {/* Expand toggle — takes up most of the row */}
+        <button
+          onClick={() => setOpen((o) => !o)}
+          className="flex items-center gap-3 flex-1 min-w-0 text-left"
+        >
+          <TxTypeBadge type={tx.type} />
+          <div className="flex-1 min-w-0">
+            <p className="text-sm text-white font-mono truncate">{tx.customer_id}</p>
+            <p className="text-xs text-gray-500 mt-0.5">
+              {tx.description || `${tx.type} transaction`}
+            </p>
+          </div>
+          <div className="text-right shrink-0">
+            <p className="text-xs text-gray-400">
+              {tx.timestamp ? format(new Date(tx.timestamp * 1000), "MMM d, HH:mm") : "—"}
+            </p>
+            <p className="text-xs text-gray-600 font-mono mt-0.5">{tx.id?.slice(0, 8)}…</p>
+          </div>
+          {open
+            ? <ChevronUp  className="h-4 w-4 text-gray-500 shrink-0" />
+            : <ChevronDown className="h-4 w-4 text-gray-500 shrink-0" />}
+        </button>
+ 
+        {/* ── Delete buttons — appear on hover ──────────────── */}
+        <div className="flex items-center gap-1 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
+          {/* Delete this transaction only */}
+          <button
+            title="Remove this transaction"
+            onClick={() =>
+              onConfirm({
+                title: "Remove Transaction",
+                description: `Remove transaction ${tx.id.slice(0, 12)}… from the pending queue? It will NOT be added to the blockchain.`,
+                confirmLabel: "Remove",
+                onConfirm: () =>
+                  // handled by page; tx.id is captured via closure
+                  (window as any).__deleteTx?.(tx.id),
+              })
+            }
+            className="p-1.5 rounded-md text-gray-500 hover:text-red-400 hover:bg-red-950/40 transition-colors"
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+          </button>
+ 
+          {/* Delete all for this customer */}
+          <button
+            title="Remove all pending for this customer"
+            onClick={() =>
+              onConfirm({
+                title: "Remove All for Customer",
+                description: `Remove ALL pending transactions for customer ${tx.customer_id}? Every pending entry with this customer ID will be discarded.`,
+                confirmLabel: "Remove All",
+                onConfirm: () => (window as any).__deleteByCustomer?.(tx.customer_id),
+              })
+            }
+            className="p-1.5 rounded-md text-gray-500 hover:text-orange-400 hover:bg-orange-950/40 transition-colors text-[10px] font-medium leading-none"
+          >
+            <span className="flex items-center gap-0.5">
+              <X className="h-3 w-3" />
+              <span>all</span>
+            </span>
+          </button>
         </div>
-        <div className="text-right shrink-0">
-          <p className="text-xs text-gray-400">
-            {tx.timestamp ? format(new Date(tx.timestamp * 1000), "MMM d, HH:mm") : "—"}
-          </p>
-          <p className="text-xs text-gray-600 font-mono mt-0.5">{tx.id?.slice(0, 8)}…</p>
-        </div>
-        {open ? (
-          <ChevronUp className="h-4 w-4 text-gray-500 shrink-0" />
-        ) : (
-          <ChevronDown className="h-4 w-4 text-gray-500 shrink-0" />
-        )}
-      </button>
-
+      </div>
+ 
+      {/* ── Expanded detail ───────────────────────────────── */}
       {open && (
         <div className="px-4 pb-3 pt-0 border-t border-gray-800 bg-gray-900/50">
           <div className="grid grid-cols-2 gap-x-6 gap-y-1.5 mt-3">
@@ -155,16 +218,27 @@ function PendingTxRow({ tx }: { tx: Transaction }) {
               { label: "Transaction ID", value: tx.id, mono: true },
               { label: "Bank ID",        value: tx.bank_id, mono: true },
               { label: "User ID",        value: tx.user_id, mono: true },
-              { label: "Timestamp",      value: tx.timestamp ? format(new Date(tx.timestamp * 1000), "yyyy-MM-dd HH:mm:ss") : "—" },
-              ...(tx.kyc_data?.first_name ? [
-                { label: "Customer Name", value: `${tx.kyc_data.first_name} ${tx.kyc_data.last_name ?? ""}` },
-                { label: "KYC Status",    value: tx.kyc_data.status ?? "—" },
-                { label: "Risk Level",    value: tx.kyc_data.risk_level ?? "—" },
-              ] : []),
+              {
+                label: "Timestamp",
+                value: tx.timestamp
+                  ? format(new Date(tx.timestamp * 1000), "yyyy-MM-dd HH:mm:ss")
+                  : "—",
+              },
+              ...(tx.kyc_data?.first_name
+                ? [
+                    { label: "Customer Name", value: `${tx.kyc_data.first_name} ${tx.kyc_data.last_name ?? ""}` },
+                    { label: "KYC Status",    value: tx.kyc_data.status ?? "—" },
+                    { label: "Risk Level",    value: tx.kyc_data.risk_level ?? "—" },
+                  ]
+                : []),
             ].map(({ label, value, mono }) => (
               <div key={label}>
                 <p className="text-xs text-gray-500">{label}</p>
-                <p className={`text-xs mt-0.5 ${mono ? "font-mono text-cyan-400" : "text-gray-200"} break-all`}>
+                <p
+                  className={`text-xs mt-0.5 ${
+                    mono ? "font-mono text-cyan-400" : "text-gray-200"
+                  } break-all`}
+                >
                   {value}
                 </p>
               </div>
@@ -173,17 +247,55 @@ function PendingTxRow({ tx }: { tx: Transaction }) {
           {tx.signature && (
             <div className="mt-2">
               <p className="text-xs text-gray-500">Signature</p>
-              <p className="text-xs font-mono text-gray-600 break-all mt-0.5 line-clamp-2">{tx.signature}</p>
+              <p className="text-xs font-mono text-gray-600 break-all mt-0.5 line-clamp-2">
+                {tx.signature}
+              </p>
             </div>
           )}
+ 
+          {/* Inline delete actions (visible when expanded, not just on hover) */}
+          <div className="flex gap-2 mt-3 pt-3 border-t border-gray-800/60">
+            <Button
+              size="sm"
+              variant="ghost"
+              className="h-7 px-2.5 text-xs text-red-400/80 hover:text-red-300 hover:bg-red-950/40 border border-red-900/30"
+              onClick={() =>
+                onConfirm({
+                  title: "Remove Transaction",
+                  description: `Remove transaction ${tx.id.slice(0, 12)}… from the queue? It will NOT be added to the blockchain.`,
+                  confirmLabel: "Remove",
+                  onConfirm: () => (window as any).__deleteTx?.(tx.id),
+                })
+              }
+            >
+              <Trash2 className="h-3 w-3 mr-1" />
+              Remove this tx
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              className="h-7 px-2.5 text-xs text-orange-400/80 hover:text-orange-300 hover:bg-orange-950/40 border border-orange-900/30"
+              onClick={() =>
+                onConfirm({
+                  title: "Remove All for Customer",
+                  description: `Remove ALL pending transactions for customer ${tx.customer_id}?`,
+                  confirmLabel: "Remove All",
+                  onConfirm: () => (window as any).__deleteByCustomer?.(tx.customer_id),
+                })
+              }
+            >
+              <X className="h-3 w-3 mr-1" />
+              All for {tx.customer_id.slice(0, 10)}…
+            </Button>
+          </div>
         </div>
       )}
     </div>
   );
 }
-
+ 
 // ─── Block Row ────────────────────────────────────────────────────────────────
-
+ 
 function BlockRow({ block }: { block: Block }) {
   const [open, setOpen] = useState(false);
   return (
@@ -203,29 +315,34 @@ function BlockRow({ block }: { block: Block }) {
         </div>
         <div className="text-right shrink-0">
           <p className="text-xs text-gray-400">
-            {block.timestamp ? formatDistanceToNow(new Date(block.timestamp * 1000), { addSuffix: true }) : "—"}
+            {block.timestamp
+              ? formatDistanceToNow(new Date(block.timestamp * 1000), { addSuffix: true })
+              : "—"}
           </p>
           {block.miner && (
             <p className="text-xs text-gray-600 mt-0.5 truncate max-w-[120px]">{block.miner}</p>
           )}
         </div>
-        {open ? (
-          <ChevronUp className="h-4 w-4 text-gray-500 shrink-0" />
-        ) : (
-          <ChevronDown className="h-4 w-4 text-gray-500 shrink-0" />
-        )}
+        {open
+          ? <ChevronUp  className="h-4 w-4 text-gray-500 shrink-0" />
+          : <ChevronDown className="h-4 w-4 text-gray-500 shrink-0" />}
       </button>
-
+ 
       {open && (
         <div className="px-4 pb-4 border-t border-gray-800 bg-gray-900/30">
           <div className="grid grid-cols-2 gap-x-6 gap-y-2 mt-3 mb-3">
             {[
-              { label: "Block Hash",    value: block.hash,       mono: true },
-              { label: "Prev Hash",     value: block.prev_hash,  mono: true },
-              { label: "Merkle Root",   value: block.merkle_root, mono: true },
-              { label: "Timestamp",     value: block.timestamp ? format(new Date(block.timestamp * 1000), "yyyy-MM-dd HH:mm:ss") : "—" },
-              { label: "Miner",         value: block.miner ?? "—", mono: true },
-              { label: "Nonce",         value: String(block.nonce) },
+              { label: "Block Hash",  value: block.hash,       mono: true },
+              { label: "Prev Hash",   value: block.prev_hash,  mono: true },
+              { label: "Merkle Root", value: block.merkle_root, mono: true },
+              {
+                label: "Timestamp",
+                value: block.timestamp
+                  ? format(new Date(block.timestamp * 1000), "yyyy-MM-dd HH:mm:ss")
+                  : "—",
+              },
+              { label: "Miner", value: block.miner ?? "—", mono: true },
+              { label: "Nonce", value: String(block.nonce) },
             ].map(({ label, value, mono }) => (
               <div key={label} className="col-span-2 sm:col-span-1">
                 <p className="text-xs text-gray-500">{label}</p>
@@ -235,7 +352,7 @@ function BlockRow({ block }: { block: Block }) {
               </div>
             ))}
           </div>
-
+ 
           {block.transactions?.length > 0 && (
             <div>
               <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">
@@ -248,7 +365,9 @@ function BlockRow({ block }: { block: Block }) {
                     className="flex items-center gap-3 px-3 py-2 bg-gray-800/40 rounded-lg"
                   >
                     <TxTypeBadge type={tx.type} />
-                    <span className="text-xs font-mono text-gray-300 truncate flex-1">{tx.customer_id}</span>
+                    <span className="text-xs font-mono text-gray-300 truncate flex-1">
+                      {tx.customer_id}
+                    </span>
                     <span className="text-xs text-gray-500 shrink-0">{tx.bank_id}</span>
                   </div>
                 ))}
@@ -260,28 +379,43 @@ function BlockRow({ block }: { block: Block }) {
     </div>
   );
 }
-
+ 
 // ─── Main Page ────────────────────────────────────────────────────────────────
-
+ 
 export default function BlockchainPage() {
   const { toast } = useToast();
-
+ 
   const [stats,          setStats]          = useState<BlockchainStats | null>(null);
   const [statsLoading,   setStatsLoading]   = useState(true);
-
+ 
   const [pendingTxs,     setPendingTxs]     = useState<Transaction[]>([]);
   const [pendingLoading, setPendingLoading] = useState(true);
   const [txTypeFilter,   setTxTypeFilter]   = useState<string>("ALL");
   const [txSearch,       setTxSearch]       = useState("");
-
+ 
   const [blocks,         setBlocks]         = useState<Block[]>([]);
   const [blocksLoading,  setBlocksLoading]  = useState(true);
   const [blockPage,      setBlockPage]      = useState(1);
   const [totalPages,     setTotalPages]     = useState(1);
-
+ 
   const [mining,         setMining]         = useState(false);
-
-  // ── Fetch stats ──────────────────────────────────────────────────────────
+  const [deleting,       setDeleting]       = useState(false);
+ 
+  // Shared confirmation dialog
+  const [confirmOpen,    setConfirmOpen]    = useState(false);
+  const [confirmOpts,    setConfirmOpts]    = useState<ConfirmOptions>({
+    title: "",
+    description: "",
+    onConfirm: () => {},
+  });
+ 
+  // Helper to open the confirm dialog
+  const openConfirm = useCallback((opts: ConfirmOptions) => {
+    setConfirmOpts(opts);
+    setConfirmOpen(true);
+  }, []);
+ 
+  // ── Fetch helpers ────────────────────────────────────────────────────────
   const fetchStats = useCallback(async () => {
     setStatsLoading(true);
     try {
@@ -293,8 +427,7 @@ export default function BlockchainPage() {
       setStatsLoading(false);
     }
   }, []);
-
-  // ── Fetch pending transactions ──────────────────────────────────────────
+ 
   const fetchPending = useCallback(async () => {
     setPendingLoading(true);
     try {
@@ -307,8 +440,7 @@ export default function BlockchainPage() {
       setPendingLoading(false);
     }
   }, []);
-
-  // ── Fetch blocks ─────────────────────────────────────────────────────────
+ 
   const fetchBlocks = useCallback(async (page = 1) => {
     setBlocksLoading(true);
     try {
@@ -317,7 +449,6 @@ export default function BlockchainPage() {
       });
       const payload: PaginatedBlocksResponse = res.data;
       const data = payload?.data || (Array.isArray(payload) ? payload : []);
-      // Reverse to show newest first
       setBlocks(Array.isArray(data) ? [...data].reverse() : []);
       setTotalPages(payload?.total_pages ?? 1);
     } catch {
@@ -326,13 +457,88 @@ export default function BlockchainPage() {
       setBlocksLoading(false);
     }
   }, []);
-
+ 
+  // ── Refresh everything ────────────────────────────────────────────────────
+  const refreshAll = useCallback(async () => {
+    await Promise.all([fetchStats(), fetchPending()]);
+  }, [fetchStats, fetchPending]);
+ 
   useEffect(() => {
     fetchStats();
     fetchPending();
     fetchBlocks(1);
   }, [fetchStats, fetchPending, fetchBlocks]);
-
+ 
+  // ── Delete handlers ───────────────────────────────────────────────────────
+ 
+  // Delete ONE transaction by ID
+  const deleteTx = useCallback(async (txId: string) => {
+    setDeleting(true);
+    try {
+      await api.delete("/api/v1/blockchain/pending/transaction", {
+        data: { transaction_id: txId },
+      });
+      toast({ title: "Transaction removed from pending queue" });
+      await refreshAll();
+    } catch (err: any) {
+      toast({
+        title: err?.response?.data?.error || "Failed to remove transaction",
+        variant: "destructive",
+      });
+    } finally {
+      setDeleting(false);
+    }
+  }, [refreshAll, toast]);
+ 
+  // Delete ALL pending for a specific customer
+  const deleteByCustomer = useCallback(async (customerId: string) => {
+    setDeleting(true);
+    try {
+      const res = await api.delete("/api/v1/blockchain/pending", {
+        params: { customer_id: customerId },
+      });
+      const removed = res.data?.data?.removed_from_memory ?? "?";
+      toast({ title: `Removed ${removed} pending transaction(s) for customer ${customerId}` });
+      await refreshAll();
+    } catch (err: any) {
+      toast({
+        title: err?.response?.data?.error || "Failed to remove transactions",
+        variant: "destructive",
+      });
+    } finally {
+      setDeleting(false);
+    }
+  }, [refreshAll, toast]);
+ 
+  // Delete ALL pending transactions
+  const deleteAll = useCallback(async () => {
+    setDeleting(true);
+    try {
+      const res = await api.delete("/api/v1/blockchain/pending");
+      const removed = res.data?.data?.removed_from_memory ?? "?";
+      toast({ title: `Removed all ${removed} pending transaction(s)` });
+      await refreshAll();
+    } catch (err: any) {
+      toast({
+        title: err?.response?.data?.error || "Failed to remove all transactions",
+        variant: "destructive",
+      });
+    } finally {
+      setDeleting(false);
+    }
+  }, [refreshAll, toast]);
+ 
+  // Expose deletion functions to PendingTxRow via window (avoids prop-drilling
+  // through the onConfirm closure chain).  Cleaned up on unmount.
+  useEffect(() => {
+    (window as any).__deleteTx         = deleteTx;
+    (window as any).__deleteByCustomer  = deleteByCustomer;
+    return () => {
+      delete (window as any).__deleteTx;
+      delete (window as any).__deleteByCustomer;
+    };
+  }, [deleteTx, deleteByCustomer]);
+ 
   // ── Mine block ────────────────────────────────────────────────────────────
   const handleMine = async () => {
     if (pendingTxs.length === 0) {
@@ -343,10 +549,7 @@ export default function BlockchainPage() {
     try {
       const res = await api.post("/api/v1/blockchain/mine");
       const block = res.data?.data;
-      toast({
-        title: `Block #${block?.index ?? "?"} mined successfully`,
-      });
-      // Refresh everything
+      toast({ title: `Block #${block?.index ?? "?"} mined successfully` });
       await Promise.all([fetchStats(), fetchPending(), fetchBlocks(1)]);
       setBlockPage(1);
     } catch (err: any) {
@@ -358,7 +561,7 @@ export default function BlockchainPage() {
       setMining(false);
     }
   };
-
+ 
   // ── Validate chain ────────────────────────────────────────────────────────
   const handleValidate = async () => {
     try {
@@ -372,7 +575,7 @@ export default function BlockchainPage() {
       toast({ title: "Could not validate chain", variant: "destructive" });
     }
   };
-
+ 
   // ── Filtered pending ──────────────────────────────────────────────────────
   const filteredPending = pendingTxs.filter((tx) => {
     const matchType = txTypeFilter === "ALL" || tx.type === txTypeFilter;
@@ -384,12 +587,43 @@ export default function BlockchainPage() {
       tx.bank_id?.toLowerCase().includes(q);
     return matchType && matchSearch;
   });
-
-  // ── KYC VERIFY transactions (the ones that need mining) ───────────────────
-  const verifyPending = pendingTxs.filter((tx) => tx.type === "CREATE" || tx.type === "VERIFY");
-
+ 
+  const verifyPending = pendingTxs.filter(
+    (tx) => tx.type === "CREATE" || tx.type === "VERIFY",
+  );
+ 
+  // ─────────────────────────────────────────────────────────────────────────
   return (
     <div className="space-y-6">
+      {/* ── Shared confirmation dialog ───────────────────── */}
+      <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
+        <AlertDialogContent className="bg-gray-900 border-gray-700">
+          <AlertDialogHeader>
+            <AlertDialogTitle className="text-white flex items-center gap-2">
+              <AlertTriangle className="h-5 w-5 text-red-400" />
+              {confirmOpts.title}
+            </AlertDialogTitle>
+            <AlertDialogDescription className="text-gray-400">
+              {confirmOpts.description}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel className="border-gray-700 text-gray-300 hover:bg-gray-800">
+              Cancel
+            </AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-red-600 hover:bg-red-500 text-white"
+              onClick={() => {
+                setConfirmOpen(false);
+                confirmOpts.onConfirm();
+              }}
+            >
+              {confirmOpts.confirmLabel ?? "Confirm"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+ 
       {/* ── Header ── */}
       <div className="flex items-start justify-between">
         <div>
@@ -422,7 +656,7 @@ export default function BlockchainPage() {
           </Button>
         </div>
       </div>
-
+ 
       {/* ── Stats grid ── */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
         {statsLoading ? (
@@ -452,7 +686,11 @@ export default function BlockchainPage() {
               icon={Clock}
               label="Pending Transactions"
               value={stats?.pending_txs ?? 0}
-              sub={verifyPending.length > 0 ? `${verifyPending.length} KYC ready to mine` : "None awaiting mine"}
+              sub={
+                verifyPending.length > 0
+                  ? `${verifyPending.length} KYC ready to mine`
+                  : "None awaiting mine"
+              }
               accent={
                 (stats?.pending_txs ?? 0) > 0
                   ? "bg-amber-500/10 text-amber-400"
@@ -473,16 +711,20 @@ export default function BlockchainPage() {
           </>
         )}
       </div>
-
+ 
       {/* ── Mine block card ── */}
-      <div className={`rounded-xl border p-4 flex items-start sm:items-center justify-between gap-4 flex-col sm:flex-row ${
-        pendingTxs.length > 0
-          ? "bg-amber-950/20 border-amber-800/40"
-          : "bg-gray-900 border-gray-800"
-      }`}>
+      <div
+        className={`rounded-xl border p-4 flex items-start sm:items-center justify-between gap-4 flex-col sm:flex-row ${
+          pendingTxs.length > 0
+            ? "bg-amber-950/20 border-amber-800/40"
+            : "bg-gray-900 border-gray-800"
+        }`}
+      >
         <div className="flex items-start gap-3">
           <div className={`p-2.5 rounded-lg ${pendingTxs.length > 0 ? "bg-amber-500/10" : "bg-gray-800"}`}>
-            <Pickaxe className={`h-5 w-5 ${pendingTxs.length > 0 ? "text-amber-400" : "text-gray-500"}`} />
+            <Pickaxe
+              className={`h-5 w-5 ${pendingTxs.length > 0 ? "text-amber-400" : "text-gray-500"}`}
+            />
           </div>
           <div>
             <p className={`font-semibold ${pendingTxs.length > 0 ? "text-amber-300" : "text-gray-300"}`}>
@@ -519,8 +761,8 @@ export default function BlockchainPage() {
           )}
         </Button>
       </div>
-
-      {/* ── Pending Transactions ── */}
+ 
+      {/* ── Pending Transactions ─────────────────────────────────────────── */}
       <Card className="bg-gray-900 border-gray-800">
         <CardHeader className="pb-3 border-b border-gray-800">
           <div className="flex items-center justify-between">
@@ -533,7 +775,33 @@ export default function BlockchainPage() {
                 </span>
               )}
             </CardTitle>
+ 
+            {/* Delete All button — only when there are pending txs */}
+            {pendingTxs.length > 0 && (
+              <Button
+                size="sm"
+                variant="ghost"
+                disabled={deleting}
+                onClick={() =>
+                  openConfirm({
+                    title: "Delete All Pending Transactions",
+                    description: `This will permanently remove ALL ${pendingTxs.length} pending transaction(s) from the queue. They will NOT be added to the blockchain. This action cannot be undone.`,
+                    confirmLabel: `Delete All (${pendingTxs.length})`,
+                    onConfirm: deleteAll,
+                  })
+                }
+                className="h-8 px-3 text-xs text-red-400/70 hover:text-red-300 hover:bg-red-950/40 border border-red-900/30"
+              >
+                {deleting ? (
+                  <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />
+                ) : (
+                  <Trash2 className="h-3.5 w-3.5 mr-1.5" />
+                )}
+                Delete All
+              </Button>
+            )}
           </div>
+ 
           {/* Filter bar */}
           <div className="flex gap-2 mt-3">
             <div className="relative flex-1">
@@ -562,6 +830,7 @@ export default function BlockchainPage() {
             </Select>
           </div>
         </CardHeader>
+ 
         <CardContent className="pt-4">
           {pendingLoading ? (
             <div className="space-y-2">
@@ -581,7 +850,7 @@ export default function BlockchainPage() {
           ) : (
             <div className="space-y-2">
               {filteredPending.map((tx) => (
-                <PendingTxRow key={tx.id} tx={tx} />
+                <PendingTxRow key={tx.id} tx={tx} onConfirm={openConfirm} />
               ))}
             </div>
           )}
@@ -592,16 +861,14 @@ export default function BlockchainPage() {
           )}
         </CardContent>
       </Card>
-
-      {/* ── Blocks ── */}
+ 
+      {/* ── Blocks ─────────────────────────────────────────────────────────── */}
       <Card className="bg-gray-900 border-gray-800">
         <CardHeader className="pb-3 border-b border-gray-800">
           <CardTitle className="text-white text-base flex items-center gap-2">
             <Layers className="h-4 w-4 text-cyan-400" />
             Blockchain Blocks
-            <span className="text-xs text-gray-500 font-normal ml-1">
-              (newest first)
-            </span>
+            <span className="text-xs text-gray-500 font-normal ml-1">(newest first)</span>
           </CardTitle>
         </CardHeader>
         <CardContent className="pt-4">
@@ -614,7 +881,9 @@ export default function BlockchainPage() {
           ) : blocks.length === 0 ? (
             <div className="text-center py-10">
               <Layers className="h-10 w-10 text-gray-700 mx-auto mb-2" />
-              <p className="text-gray-500 text-sm">Only genesis block — mine pending transactions</p>
+              <p className="text-gray-500 text-sm">
+                Only genesis block — mine pending transactions
+              </p>
             </div>
           ) : (
             <div className="space-y-2">
@@ -623,8 +892,7 @@ export default function BlockchainPage() {
               ))}
             </div>
           )}
-
-          {/* Pagination */}
+ 
           {totalPages > 1 && (
             <div className="flex items-center justify-between mt-4 pt-3 border-t border-gray-800">
               <Button
