@@ -5,6 +5,7 @@ import {
   Search, Filter, Eye, CheckCircle, XCircle, RefreshCw,
   X, User, Mail, Phone, MapPin, Shield, Calendar, Hash,
   Lock, Unlock, Loader2, AlertTriangle, PauseCircle, Clock,
+  RotateCcw,
 } from "lucide-react";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -22,12 +23,10 @@ import { KYCData, KYCStatus } from "@/types/kyc";
 import api from "@/lib/api";
 import { format } from "date-fns";
 import { useToast } from "@/components/ui/use-toast";
-
+ 
 const mask = (val?: string) =>
   "●".repeat(Math.min((val ?? "").length || 8, 10));
-
-// ─── Props ────────────────────────────────────────────────────────────────────
-
+ 
 interface KYCDetailDrawerProps {
   record: KYCData | null;
   onClose: () => void;
@@ -38,9 +37,7 @@ interface KYCDetailDrawerProps {
   onReview:   (id: string, notes: string, riskLevel: string) => void;
   actionLoading: string | null;
 }
-
-// ─── Detail Drawer ────────────────────────────────────────────────────────────
-
+ 
 function KYCDetailDrawer({
   record, onClose,
   onVerify, onReject, onSuspend, onExpire, onReview,
@@ -50,19 +47,17 @@ function KYCDetailDrawer({
   const [decrypting,      setDecrypting]      = useState(false);
   const [decryptError,    setDecryptError]    = useState<string | null>(null);
   const [revealed,        setRevealed]        = useState(false);
-
-  // Suspend modal state
+ 
   const [showSuspendForm, setShowSuspendForm] = useState(false);
   const [suspendReason,   setSuspendReason]   = useState("");
-
-  // Periodic Review form state
+ 
   const [showReviewForm,  setShowReviewForm]  = useState(false);
   const [reviewNotes,     setReviewNotes]     = useState("");
   const [reviewRiskLevel, setReviewRiskLevel] = useState("low");
   const [docsValid,       setDocsValid]       = useState(true);
   const [amlPassed,       setAmlPassed]       = useState(true);
   const [pepPassed,       setPepPassed]       = useState(true);
-
+ 
   useEffect(() => {
     setDecryptedRecord(null);
     setDecrypting(false);
@@ -73,9 +68,9 @@ function KYCDetailDrawer({
     setSuspendReason("");
     setReviewNotes("");
   }, [record?.customer_id]);
-
+ 
   if (!record) return null;
-
+ 
   const fetchDecrypted = async () => {
     if (decryptedRecord) { setRevealed(true); return; }
     setDecrypting(true);
@@ -91,16 +86,16 @@ function KYCDetailDrawer({
       setDecrypting(false);
     }
   };
-
+ 
   const sensitiveValues = {
     email:     revealed && decryptedRecord ? decryptedRecord.email     : undefined,
     phone:     revealed && decryptedRecord ? decryptedRecord.phone     : undefined,
     id_number: revealed && decryptedRecord ? decryptedRecord.id_number : undefined,
   };
-
+ 
   const fmtDate = (unix?: number) =>
     unix ? format(new Date(unix * 1000), "MMM d, yyyy HH:mm") : "—";
-
+ 
   const row = (icon: React.ReactNode, label: string, value: React.ReactNode) => (
     <div className="flex items-start gap-3 py-2.5 border-b border-gray-800/70 last:border-0">
       <div className="mt-0.5 text-gray-600 shrink-0">{icon}</div>
@@ -110,7 +105,7 @@ function KYCDetailDrawer({
       </div>
     </div>
   );
-
+ 
   const sensitiveRow = (icon: React.ReactNode, label: string, field: "email" | "phone" | "id_number") => {
     const plainValue = sensitiveValues[field];
     return (
@@ -129,14 +124,15 @@ function KYCDetailDrawer({
       </div>
     );
   };
-
+ 
   const isLoading = actionLoading === record.customer_id;
-
+  const isSuspendedOrExpired = record.status === "SUSPENDED" || record.status === "EXPIRED";
+ 
   return (
     <>
       <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-40" onClick={onClose} />
       <div className="fixed inset-y-0 right-0 w-full max-w-md bg-gray-950 border-l border-gray-800 z-50 flex flex-col shadow-2xl">
-
+ 
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-4 border-b border-gray-800 bg-gray-900/80 sticky top-0">
           <div>
@@ -162,7 +158,7 @@ function KYCDetailDrawer({
             </button>
           </div>
         </div>
-
+ 
         {/* Status + Actions bar */}
         <div className="flex flex-wrap items-center gap-2 px-5 py-3 border-b border-gray-800 bg-gray-900/40">
           <KYCStatusBadge status={record.status} />
@@ -171,7 +167,7 @@ function KYCDetailDrawer({
             : record.risk_level === "medium" ? "bg-amber-900/60 text-amber-300 border border-amber-800"
             : "bg-green-900/60 text-green-300 border border-green-800"
           }`}>{record.risk_level || "low"} risk</span>
-
+ 
           {/* PENDING → Verify / Reject */}
           {record.status === "PENDING" && (
             <div className="ml-auto flex gap-2">
@@ -186,7 +182,7 @@ function KYCDetailDrawer({
               </Button>
             </div>
           )}
-
+ 
           {/* VERIFIED → Suspend / Expire / Periodic Review */}
           {record.status === "VERIFIED" && (
             <div className="ml-auto flex gap-1.5 flex-wrap">
@@ -211,9 +207,28 @@ function KYCDetailDrawer({
               </Button>
             </div>
           )}
+ 
+          {/* ── NEW: SUSPENDED or EXPIRED → Re-Verify ────────────────────────── */}
+          {isSuspendedOrExpired && (
+            <div className="ml-auto">
+              <Button size="sm"
+                className="h-7 px-3 bg-green-700 hover:bg-green-600 text-white text-xs"
+                disabled={isLoading}
+                onClick={() => onVerify(record.customer_id)}>
+                {isLoading
+                  ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  : <><RotateCcw className="h-3.5 w-3.5 mr-1" />Re-Verify</>}
+              </Button>
+              <p className="text-gray-500 text-xs mt-1 text-right">
+                {record.status === "SUSPENDED"
+                  ? "Lift suspension → VERIFIED"
+                  : "Re-validate → VERIFIED"}
+              </p>
+            </div>
+          )}
         </div>
-
-        {/* ── Suspend inline form ── */}
+ 
+        {/* Suspend inline form */}
         {showSuspendForm && (
           <div className="mx-5 mt-3 bg-amber-950/30 border border-amber-800/50 rounded-xl p-4 space-y-3">
             <p className="text-xs font-semibold text-amber-400 flex items-center gap-1.5">
@@ -239,15 +254,13 @@ function KYCDetailDrawer({
             </div>
           </div>
         )}
-
-        {/* ── Periodic Review inline form ── */}
+ 
+        {/* Periodic Review inline form */}
         {showReviewForm && (
           <div className="mx-5 mt-3 bg-blue-950/30 border border-blue-800/50 rounded-xl p-4 space-y-3">
             <p className="text-xs font-semibold text-blue-400 flex items-center gap-1.5">
               <RefreshCw className="h-3.5 w-3.5" /> Periodic Review
             </p>
-
-            {/* Checkboxes */}
             <div className="space-y-1.5">
               {[
                 { label: "Documents Valid",  val: docsValid, set: setDocsValid },
@@ -261,8 +274,6 @@ function KYCDetailDrawer({
                 </label>
               ))}
             </div>
-
-            {/* Risk level */}
             <div>
               <p className="text-xs text-gray-500 mb-1">Update Risk Level</p>
               <Select value={reviewRiskLevel} onValueChange={setReviewRiskLevel}>
@@ -276,15 +287,12 @@ function KYCDetailDrawer({
                 </SelectContent>
               </Select>
             </div>
-
-            {/* Notes */}
             <Textarea
               placeholder="Review notes…"
               value={reviewNotes}
               onChange={(e) => setReviewNotes(e.target.value)}
               className="bg-gray-900 border-gray-700 text-white text-xs min-h-[64px] resize-none"
             />
-
             <div className="flex gap-2 justify-end">
               <Button size="sm" variant="ghost" className="h-7 text-xs text-gray-400"
                 onClick={() => { setShowReviewForm(false); setReviewNotes(""); }}>
@@ -302,7 +310,7 @@ function KYCDetailDrawer({
             )}
           </div>
         )}
-
+ 
         {/* Sensitive data notice */}
         {!showSuspendForm && !showReviewForm && (
           decryptError ? (
@@ -321,7 +329,7 @@ function KYCDetailDrawer({
             </div>
           )
         )}
-
+ 
         {/* Scrollable body */}
         <div className="flex-1 overflow-y-auto px-5 py-4 space-y-5">
           <section>
@@ -334,7 +342,7 @@ function KYCDetailDrawer({
               {row(<Shield className="h-4 w-4" />, "Nationality", record.nationality)}
             </div>
           </section>
-
+ 
           <section>
             <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2 flex items-center gap-1.5">
               <Mail className="h-3.5 w-3.5" /> Contact
@@ -347,7 +355,7 @@ function KYCDetailDrawer({
               {sensitiveRow(<Phone className="h-4 w-4" />, "Phone", "phone")}
             </div>
           </section>
-
+ 
           <section>
             <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2 flex items-center gap-1.5">
               <Hash className="h-3.5 w-3.5" /> Identity Document
@@ -361,7 +369,7 @@ function KYCDetailDrawer({
               {row(<Calendar className="h-4 w-4" />, "ID Expiry", record.id_expiry_date)}
             </div>
           </section>
-
+ 
           {record.address && (
             <section>
               <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2 flex items-center gap-1.5">
@@ -375,7 +383,7 @@ function KYCDetailDrawer({
               </div>
             </section>
           )}
-
+ 
           <section>
             <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2 flex items-center gap-1.5">
               <Shield className="h-3.5 w-3.5" /> Verification
@@ -398,8 +406,7 @@ function KYCDetailDrawer({
                 )}
             </div>
           </section>
-
-          {/* Periodic Review — read-only display */}
+ 
           {(record.review_count > 0 || record.last_review_date) && (
             <section>
               <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2 flex items-center gap-1.5">
@@ -418,9 +425,7 @@ function KYCDetailDrawer({
     </>
   );
 }
-
-// ─── Main Page ────────────────────────────────────────────────────────────────
-
+ 
 export default function KYCPage() {
   const { toast } = useToast();
   const [records,       setRecords]       = useState<KYCData[]>([]);
@@ -429,7 +434,7 @@ export default function KYCPage() {
   const [statusFilter,  setStatusFilter]  = useState<string>("ALL");
   const [selected,      setSelected]      = useState<KYCData | null>(null);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
-
+ 
   const fetchKYC = useCallback(async () => {
     setLoading(true);
     try {
@@ -444,18 +449,16 @@ export default function KYCPage() {
       setLoading(false);
     }
   }, [statusFilter]);
-
+ 
   useEffect(() => { fetchKYC(); }, [fetchKYC]);
-
+ 
   const filtered = records.filter((r) =>
     r.first_name?.toLowerCase().includes(search.toLowerCase()) ||
     r.last_name?.toLowerCase().includes(search.toLowerCase()) ||
     r.email?.toLowerCase().includes(search.toLowerCase()) ||
     r.id_number?.toLowerCase().includes(search.toLowerCase())
   );
-
-  // ── Actions ──────────────────────────────────────────────────────────────
-
+ 
   const handleVerify = async (customerId: string) => {
     setActionLoading(customerId);
     try {
@@ -467,7 +470,7 @@ export default function KYCPage() {
       toast({ title: err?.response?.data?.error || "Failed to verify KYC", variant: "destructive" });
     } finally { setActionLoading(null); }
   };
-
+ 
   const handleReject = async (customerId: string) => {
     setActionLoading(customerId);
     try {
@@ -479,7 +482,7 @@ export default function KYCPage() {
       toast({ title: err?.response?.data?.error || "Failed to reject KYC", variant: "destructive" });
     } finally { setActionLoading(null); }
   };
-
+ 
   const handleSuspend = async (customerId: string, reason: string) => {
     setActionLoading(customerId);
     try {
@@ -491,7 +494,7 @@ export default function KYCPage() {
       toast({ title: err?.response?.data?.error || "Failed to suspend KYC", variant: "destructive" });
     } finally { setActionLoading(null); }
   };
-
+ 
   const handleExpire = async (customerId: string) => {
     setActionLoading(customerId);
     try {
@@ -503,16 +506,13 @@ export default function KYCPage() {
       toast({ title: err?.response?.data?.error || "Failed to expire KYC", variant: "destructive" });
     } finally { setActionLoading(null); }
   };
-
+ 
   const handleReview = async (customerId: string, notes: string, riskLevel: string) => {
     setActionLoading(customerId);
     try {
       await api.post("/api/v1/kyc/review", {
-        customer_id:       customerId,
-        review_notes:      notes,
-        documents_valid:   true,
-        aml_check_passed:  true,
-        pep_check_passed:  true,
+        customer_id: customerId, review_notes: notes,
+        documents_valid: true, aml_check_passed: true, pep_check_passed: true,
         risk_level_update: riskLevel,
       });
       toast({ title: "Periodic review completed" });
@@ -521,9 +521,7 @@ export default function KYCPage() {
       toast({ title: err?.response?.data?.error || "Failed to submit review", variant: "destructive" });
     } finally { setActionLoading(null); }
   };
-
-  // ── Stats ─────────────────────────────────────────────────────────────────
-
+ 
   const counts = {
     total:     records.length,
     pending:   records.filter((r) => r.status === "PENDING").length,
@@ -532,7 +530,7 @@ export default function KYCPage() {
     suspended: records.filter((r) => r.status === "SUSPENDED").length,
     expired:   records.filter((r) => r.status === "EXPIRED").length,
   };
-
+ 
   return (
     <>
       <div className="space-y-6">
@@ -547,16 +545,15 @@ export default function KYCPage() {
             Refresh
           </Button>
         </div>
-
-        {/* Stat pills — now 6 */}
+ 
         <div className="grid grid-cols-3 sm:grid-cols-6 gap-3">
           {[
-            { label: "Total",     value: counts.total,     color: "text-gray-300",  bg: "bg-gray-800/60 border-gray-700" },
-            { label: "Pending",   value: counts.pending,   color: "text-amber-400", bg: "bg-amber-900/20 border-amber-800/50" },
-            { label: "Verified",  value: counts.verified,  color: "text-green-400", bg: "bg-green-900/20 border-green-800/50" },
-            { label: "Rejected",  value: counts.rejected,  color: "text-red-400",   bg: "bg-red-900/20 border-red-800/50" },
-            { label: "Suspended", value: counts.suspended, color: "text-orange-400",bg: "bg-orange-900/20 border-orange-800/50" },
-            { label: "Expired",   value: counts.expired,   color: "text-gray-400",  bg: "bg-gray-800/40 border-gray-700/50" },
+            { label: "Total",     value: counts.total,     color: "text-gray-300",   bg: "bg-gray-800/60 border-gray-700" },
+            { label: "Pending",   value: counts.pending,   color: "text-amber-400",  bg: "bg-amber-900/20 border-amber-800/50" },
+            { label: "Verified",  value: counts.verified,  color: "text-green-400",  bg: "bg-green-900/20 border-green-800/50" },
+            { label: "Rejected",  value: counts.rejected,  color: "text-red-400",    bg: "bg-red-900/20 border-red-800/50" },
+            { label: "Suspended", value: counts.suspended, color: "text-orange-400", bg: "bg-orange-900/20 border-orange-800/50" },
+            { label: "Expired",   value: counts.expired,   color: "text-gray-400",   bg: "bg-gray-800/40 border-gray-700/50" },
           ].map((s) => (
             <div key={s.label} className={`rounded-xl border px-4 py-3 ${s.bg}`}>
               <p className={`text-2xl font-bold tabular-nums ${s.color}`}>{s.value}</p>
@@ -564,8 +561,7 @@ export default function KYCPage() {
             </div>
           ))}
         </div>
-
-        {/* Table */}
+ 
         <Card className="bg-gray-900 border-gray-800">
           <CardHeader className="pb-3">
             <div className="flex flex-col sm:flex-row gap-3">
@@ -670,6 +666,19 @@ export default function KYCPage() {
                                 </Button>
                               </>
                             )}
+ 
+                            {/* ── NEW: inline Re-Verify for SUSPENDED / EXPIRED ── */}
+                            {(record.status === "SUSPENDED" || record.status === "EXPIRED") && (
+                              <Button size="sm" variant="ghost"
+                                className="text-green-400 hover:text-green-300 hover:bg-green-900/20 h-7 px-2 text-xs"
+                                onClick={() => handleVerify(record.customer_id)}
+                                disabled={actionLoading === record.customer_id}>
+                                {actionLoading === record.customer_id
+                                  ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                  : <><RotateCcw className="h-3.5 w-3.5 mr-1" />Re-Verify</>}
+                              </Button>
+                            )}
+ 
                             <Button size="sm" variant="ghost"
                               className="text-cyan-400 hover:text-cyan-300 hover:bg-cyan-900/20 h-7 px-2 text-xs"
                               onClick={() => setSelected(record)}>
@@ -691,7 +700,7 @@ export default function KYCPage() {
           </CardContent>
         </Card>
       </div>
-
+ 
       <KYCDetailDrawer
         record={selected}
         onClose={() => setSelected(null)}
