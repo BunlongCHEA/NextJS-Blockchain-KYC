@@ -478,7 +478,10 @@ export default function BlockchainPage() {
       await api.delete("/api/v1/blockchain/pending/transaction", {
         data: { transaction_id: txId },
       });
-      toast({ title: "Transaction removed from pending queue" });
+      toast({ 
+        title: "Transaction removed from pending queue",
+        variant: "success",
+      });
       await refreshAll();
     } catch (err: any) {
       toast({
@@ -498,7 +501,10 @@ export default function BlockchainPage() {
         params: { customer_id: customerId },
       });
       const removed = res.data?.data?.removed_from_memory ?? "?";
-      toast({ title: `Removed ${removed} pending transaction(s) for customer ${customerId}` });
+      toast({ 
+        title: `Removed ${removed} pending transaction(s) for customer ${customerId}`,
+        variant: "success",
+      });
       await refreshAll();
     } catch (err: any) {
       toast({
@@ -516,7 +522,10 @@ export default function BlockchainPage() {
     try {
       const res = await api.delete("/api/v1/blockchain/pending");
       const removed = res.data?.data?.removed_from_memory ?? "?";
-      toast({ title: `Removed all ${removed} pending transaction(s)` });
+      toast({ 
+        title: `Removed all ${removed} pending transaction(s)`,
+        variant: "success",
+      });
       await refreshAll();
     } catch (err: any) {
       toast({
@@ -542,14 +551,22 @@ export default function BlockchainPage() {
   // ── Mine block ────────────────────────────────────────────────────────────
   const handleMine = async () => {
     if (pendingTxs.length === 0) {
-      toast({ title: "No pending transactions to mine", variant: "destructive" });
+      toast({ 
+        title: "No pending transactions to mine", 
+        description: "Verify a KYC record first to create a mineable transaction.",
+        variant: "warning",
+     });
       return;
     }
     setMining(true);
     try {
       const res = await api.post("/api/v1/blockchain/mine");
       const block = res.data?.data;
-      toast({ title: `Block #${block?.index ?? "?"} mined successfully` });
+      toast({
+        title: `Block #${block?.index ?? "?"} mined successfully`,
+        description: `${block?.transactions?.length ?? 0} transaction(s) permanently recorded.`,
+        variant: "success",
+      });
       await Promise.all([fetchStats(), fetchPending(), fetchBlocks(1)]);
       setBlockPage(1);
     } catch (err: any) {
@@ -569,7 +586,10 @@ export default function BlockchainPage() {
       const valid = res.data?.data?.is_valid ?? res.data?.is_valid;
       toast({
         title: valid ? "Chain is valid ✓" : "Chain validation FAILED",
-        variant: valid ? "default" : "destructive",
+        description: valid
+          ? "All blocks are properly linked and verified."
+          : "One or more blocks failed integrity checks — check server logs.",
+        variant: valid ? "success" : "destructive",
       });
     } catch {
       toast({ title: "Could not validate chain", variant: "destructive" });
