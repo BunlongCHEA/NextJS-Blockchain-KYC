@@ -3,10 +3,10 @@
  *
  * Relay endpoint: Go-KYC calls this when a customer KYC status changes to
  * SUSPENDED or EXPIRED. NextJS validates the integration API key, then
- * forwards the payload to CBS /internal/webhook/kyc/status-changed.
+ * forwards the payload to CBS /api/v1/internal/webhook/kyc/status-changed.
  *
  * Auth:  Authorization: Bearer <integration_api_key>  (same key system as gateway)
- * Env:   CBS_WEBHOOK_URL     — e.g. https://cbs.bank/internal/webhook/kyc/status-changed
+ * Env:   CBS_WEBHOOK_URL     — e.g. https://cbs.bank/api/v1/internal/webhook/kyc/status-changed
  *        CBS_WEBHOOK_SECRET  — shared secret CBS expects in X-Webhook-Api-Key header
  */
 

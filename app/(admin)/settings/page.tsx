@@ -19,6 +19,7 @@ import {
 } from "@/components/ui/select";
 import { toast } from "@/components/ui/use-toast";
 import api from "@/lib/api";
+import { RootKEKRotationSection } from "@/components/settings/root-kek-rotation";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -619,6 +620,9 @@ function SecurityTab() {
           </div>
         </div>
       </Section>
+
+      {/* ── Root KEK Rotation — separate, highest-sensitivity card ───── */}
+      <RootKEKRotationSection/>
     </div>
   );
 }
