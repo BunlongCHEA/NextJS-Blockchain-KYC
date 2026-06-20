@@ -6,6 +6,7 @@ import {
   Search, Mail, Webhook, Loader2, CheckCircle2, AlertCircle,
   User, RefreshCw, ChevronRight, X, Radio, Lock, Unlock,
   KeyRound, AlertTriangle, Clock, RotateCw, Users,
+  Fingerprint, Info, History,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -55,6 +56,33 @@ interface KEKRow {
   IsActive:  boolean;
   CreatedAt: number;
   RetiredAt?: number;
+}
+
+interface MQKeyRow {
+  key_version:            string;
+  fingerprint:            string;  // "sha256:a1b2c3d4..." — display-only, never the raw key
+  is_active:              boolean;
+  rotation_policy_months: number;  // 6 or 12
+  valid_from:             number;
+  valid_until:            number;
+  retired_at?:            number;
+  days_until_rotation:    number;
+  created_by:             string;
+  created_at:             number;
+}
+
+interface MQKeyMaterial {
+  algorithm:   string; // "AES-256-GCM"
+  key_base64:  string; // raw key — present ONLY in the rotate response, once
+  key_version: string;
+}
+
+interface MQRotateResult {
+  new_key_version: string;
+  policy_months:   number;
+  valid_from?:     number;
+  valid_until?:    number;
+  key_material?:   MQKeyMaterial;
 }
 
 const ALERT_CONFIGS_KEY = "kyc_alert_configs";
@@ -128,6 +156,16 @@ function SecurityTab() {
   const [signAlgo, setSignAlgo] = useState<"ECDSA" | "RSA">("ECDSA");
   const [signSize, setSignSize] = useState<number>(256);
 
+  // MQ key rotation (AES-256-GCM, RabbitMQ payload encryption)
+  const [mqKeys,        setMqKeys]        = useState<MQKeyRow[]>([]);
+  const [mqLoading,     setMqLoading]     = useState(true);
+  const [rotatingMQ,    setRotatingMQ]    = useState(false);
+  const [mqPolicy,      setMqPolicy]      = useState<string>("12");
+  const [confirmMQ,     setConfirmMQ]     = useState(false);
+  const [showMQHistory, setShowMQHistory] = useState(false);
+  const [revealResult, setRevealResult] = useState<MQRotateResult | null>(null);
+  const [copiedKey,    setCopiedKey]    = useState(false);
+
   const fetchPolicy = useCallback(async () => {
     setPolicyLoading(true);
     try {
@@ -163,11 +201,25 @@ function SecurityTab() {
     } catch { /* ignore */ }
   }, []);
 
+  const fetchMQKeys = useCallback(async () => {
+    setMqLoading(true);
+    try {
+      const res = await fetch("/api/integration/mq-keys");
+      const data = await res.json();
+      setMqKeys(data?.data?.keys ?? []);
+    } catch {
+      setMqKeys([]);
+    } finally {
+      setMqLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     fetchPolicy();
     fetchLockStatus();
     fetchKeys();
-  }, [fetchPolicy, fetchLockStatus, fetchKeys]);
+    fetchMQKeys();
+  }, [fetchPolicy, fetchLockStatus, fetchKeys, fetchMQKeys]);
 
   // When user flips algorithm, default the size to a sensible value for that algo
   useEffect(() => {
@@ -285,6 +337,81 @@ function SecurityTab() {
         variant: "destructive",
       });
     } finally { setRotatingKEK(false); }
+  };
+
+  const handleRotateMQKey = async () => {
+    if (!confirmMQ) { setConfirmMQ(true); return; }
+
+    setRotatingMQ(true);
+    try {
+      const res = await fetch("/api/integration/mq-keys", {
+        method:  "POST",
+        headers: { "Content-Type": "application/json" },
+        body:    JSON.stringify({ policy_months: Number(mqPolicy) }),
+      });
+      const data = await res.json();
+
+      if (!res.ok || !data.success) {
+        throw new Error(data.error ?? "Rotation failed");
+      }
+
+      setRevealResult(data.data as MQRotateResult); // opens the one-time reveal dialog
+      toast({
+        title: "MQ encryption key rotated — copy it now",
+        description: `New key version: ${data.data?.new_key_version} · policy: every ${mqPolicy} months`,
+      });
+      fetchMQKeys();
+    } catch (err: any) {
+      toast({ title: err?.message ?? "Rotation failed", variant: "destructive" });
+    } finally {
+      setRotatingMQ(false);
+      setConfirmMQ(false);
+    }
+  };
+
+  const downloadKeyMaterial = () => {
+    if (!revealResult?.key_material) return;
+
+    const payload = {
+      // ── Identification ──────────────────────────────────────────────
+      key_version:            revealResult.key_material.key_version,
+      algorithm:              revealResult.key_material.algorithm,
+      key_base64:             revealResult.key_material.key_base64,
+      rotation_policy_months: revealResult.policy_months,
+      valid_from:             revealResult.valid_from,
+      valid_until:            revealResult.valid_until,
+      issued_at:              Math.floor(Date.now() / 1000),
+      // ── Wiring info for the receiving team (CBS) ────────────────────
+      exchange:    "kyc.events",
+      routing_key: "kyc.status.changed",
+      queue:       "cbs.kyc.status-changed",
+      usage_note:
+        "Add this key to kyc.mq.keys-json on the CBS side under its key_version " +
+        "BEFORE the GoKYC publisher rotates again, or messages encrypted with " +
+        "this version will fail to decrypt once it retires.",
+      security_warning:
+        "This file contains live key material for decrypting production KYC " +
+        "status-change events. Transfer ONLY over an encrypted channel " +
+        "(e.g. PGP-encrypted email, a secrets manager, or an internal vault) " +
+        "and delete local copies after the receiving team has imported it.",
+    };
+
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement("a");
+    a.href     = url;
+    a.download = `mq-key-${revealResult.key_material.key_version}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  const copyKeyMaterial = () => {
+    if (!revealResult?.key_material) return;
+    navigator.clipboard.writeText(revealResult.key_material.key_base64);
+    setCopiedKey(true);
+    setTimeout(() => setCopiedKey(false), 3000);
   };
 
   const fmtDate = (unix?: number) =>
@@ -619,7 +746,248 @@ function SecurityTab() {
             </p>
           </div>
         </div>
+
+        {/* MQ Key block — AES-256-GCM, RabbitMQ payload encryption */}
+        <div className="rounded-lg border border-gray-800 p-3 space-y-3">
+          <div className="flex items-start justify-between gap-3 flex-wrap">
+            <div className="flex-1 min-w-[220px]">
+              <p className="text-sm text-white font-medium flex items-center gap-1.5">
+                <Radio className="h-3.5 w-3.5 text-orange-400"/>
+                MQ Encryption Key (RabbitMQ Payloads)
+              </p>
+              <p className="text-xs text-gray-500 mt-0.5">
+                AES-256-GCM key encrypting KYC status-change events published to RabbitMQ.
+                Choose a 6 or 12-month policy before rotating.
+              </p>
+            </div>
+
+            <div className="flex items-center gap-2 flex-wrap">
+              <Select value={mqPolicy} onValueChange={v => { setMqPolicy(v); setConfirmMQ(false); }}>
+                <SelectTrigger className="bg-gray-800 border-gray-700 text-white text-xs h-8 w-[140px]">
+                  <SelectValue/>
+                </SelectTrigger>
+                <SelectContent className="bg-gray-800 border-gray-700 text-white">
+                  <SelectItem value="6">Every 6 months</SelectItem>
+                  <SelectItem value="12">Every 12 months</SelectItem>
+                </SelectContent>
+              </Select>
+
+              <Button
+                onClick={handleRotateMQKey}
+                disabled={rotatingMQ}
+                size="sm"
+                className={confirmMQ
+                  ? "bg-red-700 hover:bg-red-600 text-white text-xs"
+                  : "bg-orange-700 hover:bg-orange-600 text-white text-xs"}
+              >
+                {rotatingMQ
+                  ? <><Loader2 className="h-3 w-3 mr-1 animate-spin"/>Rotating…</>
+                  : confirmMQ
+                    ? <><AlertTriangle className="h-3 w-3 mr-1"/>Confirm Rotate</>
+                    : <><RotateCw className="h-3 w-3 mr-1"/>Rotate</>}
+              </Button>
+
+              {confirmMQ && (
+                <Button
+                  onClick={() => setConfirmMQ(false)}
+                  disabled={rotatingMQ}
+                  size="sm"
+                  variant="outline"
+                  className="border-gray-700 text-gray-300 text-xs"
+                >
+                  Cancel
+                </Button>
+              )}
+            </div>
+          </div>
+
+          {confirmMQ && (
+            <div className="rounded-lg bg-amber-950/30 border border-amber-800/50 px-3 py-2.5 text-xs text-amber-300 flex items-start gap-2">
+              <AlertTriangle className="h-3.5 w-3.5 shrink-0 mt-0.5"/>
+              <span>
+                CBS must already have this new key version provisioned in its key store before
+                the old version fully retires, or decryption of in-flight messages will fail.
+                Confirm to rotate to a <strong>{mqPolicy}-month</strong> key.
+              </span>
+            </div>
+          )}
+
+          {/* Active key card — secure display: fingerprint only, never the raw key */}
+          {mqLoading ? (
+            <Skeleton className="h-16 w-full bg-gray-800"/>
+          ) : (() => {
+            const active = mqKeys.find(k => k.is_active);
+            const history = mqKeys.filter(k => !k.is_active);
+            const urgent = active && active.days_until_rotation <= 14;
+
+            if (!active) {
+              return (
+                <p className="text-xs text-gray-600">
+                  No active MQ key yet — one will be generated automatically on first startup.
+                </p>
+              );
+            }
+
+            return (
+              <>
+                <div className={`rounded-lg border px-3.5 py-3 ${
+                  urgent ? "bg-amber-950/20 border-amber-800/40" : "bg-emerald-950/15 border-emerald-800/30"
+                }`}>
+                  <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
+                    <div className="flex items-center gap-2">
+                      <Badge className="bg-emerald-900/40 text-emerald-400 border-emerald-800 text-xs">
+                        Active
+                      </Badge>
+                      <code className="text-cyan-400 text-xs font-mono">{active.key_version}</code>
+                    </div>
+                    <span className="inline-flex items-center gap-1.5 bg-gray-800 border border-gray-700 rounded px-2 py-1 font-mono text-xs text-gray-400">
+                      <Fingerprint className="h-3 w-3 text-gray-500"/>
+                      {active.fingerprint || "—"}
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 text-xs">
+                    <div>
+                      <p className="text-gray-500">Created</p>
+                      <p className="text-gray-300">{fmtDate(active.created_at)}</p>
+                    </div>
+                    <div>
+                      <p className="text-gray-500">Policy</p>
+                      <p className="text-gray-300">Every {active.rotation_policy_months} months</p>
+                    </div>
+                    <div>
+                      <p className="text-gray-500">Valid until</p>
+                      <p className="text-gray-300">{fmtDate(active.valid_until)}</p>
+                    </div>
+                    <div>
+                      <p className="text-gray-500">Rotation due</p>
+                      <p className={urgent ? "text-amber-400 font-semibold" : "text-gray-300"}>
+                        {active.days_until_rotation === 0 ? "Overdue" : `in ${active.days_until_rotation}d`}
+                      </p>
+                    </div>
+                  </div>
+
+                  {urgent && (
+                    <p className="text-xs text-amber-400/80 mt-2 pt-2 border-t border-amber-800/30">
+                      Rotation window closing — rotate soon to stay within policy.
+                    </p>
+                  )}
+                </div>
+
+                <div className="flex items-start gap-2 text-xs text-gray-500">
+                  <Info className="h-3.5 w-3.5 text-gray-500 shrink-0 mt-0.5"/>
+                  <p>
+                    The raw key is never sent to this browser — only a one-way SHA-256 fingerprint
+                    is shown, used to confirm key identity during rotation runbooks. The key itself
+                    stays wrapped at rest in Go-KYC's database, encrypted by the active KEK.
+                  </p>
+                </div>
+
+                {history.length > 0 && (
+                  <button
+                    onClick={() => setShowMQHistory(true)}
+                    className="text-xs text-gray-500 hover:text-gray-300 flex items-center gap-1.5"
+                  >
+                    <History className="h-3 w-3"/>View {history.length} retired key(s)
+                  </button>
+                )}
+              </>
+            );
+          })()}
+        </div>
       </Section>
+
+      {/* MQ Key retired-version history */}
+      {showMQHistory && (
+        <div className="fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4"
+          onClick={() => setShowMQHistory(false)}>
+          <Card className="bg-gray-900 border-gray-800 max-w-lg w-full max-h-[70vh] overflow-y-auto"
+            onClick={e => e.stopPropagation()}>
+            <CardHeader className="pb-3 flex flex-row items-center justify-between">
+              <CardTitle className="text-white text-sm flex items-center gap-2">
+                <History className="h-4 w-4 text-gray-400"/>Retired MQ Keys
+              </CardTitle>
+              <button onClick={() => setShowMQHistory(false)} className="text-gray-500 hover:text-white">
+                <X className="h-4 w-4"/>
+              </button>
+            </CardHeader>
+            <CardContent className="space-y-2">
+              {mqKeys.filter(k => !k.is_active).map(k => (
+                <div key={k.key_version} className="flex items-center justify-between bg-gray-800/40 border border-gray-700/50 rounded-lg px-3 py-2.5">
+                  <div className="flex items-center gap-2.5">
+                    <code className="text-cyan-400 text-xs">{k.key_version}</code>
+                    <span className="inline-flex items-center gap-1 bg-gray-800 border border-gray-700 rounded px-1.5 py-0.5 font-mono text-xs text-gray-500">
+                      <Fingerprint className="h-2.5 w-2.5"/>{k.fingerprint}
+                    </span>
+                  </div>
+                  <div className="text-xs text-gray-500 text-right">
+                    <p>Retired {fmtDate(k.retired_at)}</p>
+                    <p>Policy: {k.rotation_policy_months}mo · by {k.created_by}</p>
+                  </div>
+                </div>
+              ))}
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
+      {/* One-time MQ key reveal — closes the loop on key sharing with CBS */}
+      {revealResult?.key_material && (
+        <div className="fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4">
+          <Card className="bg-gray-900 border-amber-700/60 max-w-lg w-full">
+            <CardHeader className="pb-3">
+              <CardTitle className="text-amber-300 text-sm flex items-center gap-2">
+                <AlertTriangle className="h-4 w-4"/>Copy Your MQ Key NOW
+              </CardTitle>
+              <p className="text-xs text-amber-400/80 mt-0.5">
+                Shown only once. After you close this dialog, only a fingerprint is ever
+                displayed again — this key cannot be recovered through the UI.
+              </p>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="bg-gray-800/50 rounded-lg border border-gray-700/50 px-4 py-3 space-y-1.5 text-xs">
+                {[
+                  { label: "Key Version", value: revealResult.key_material.key_version },
+                  { label: "Algorithm",   value: revealResult.key_material.algorithm },
+                  { label: "Policy",      value: `Every ${revealResult.policy_months} months` },
+                  { label: "Valid Until", value: revealResult.valid_until ? fmtDate(revealResult.valid_until) : "—" },
+                ].map(({ label, value }) => (
+                  <div key={label} className="flex justify-between">
+                    <span className="text-gray-500">{label}</span>
+                    <span className="font-mono text-gray-300">{value}</span>
+                  </div>
+                ))}
+              </div>
+
+              <div>
+                <p className="text-xs text-gray-500 uppercase tracking-wider mb-1.5">Key (base64)</p>
+                <div className="bg-gray-950 rounded-lg border border-gray-800 p-3 flex items-center gap-2">
+                  <code className="font-mono text-xs text-emerald-400 break-all flex-1">
+                    {revealResult.key_material.key_base64}
+                  </code>
+                  <button onClick={copyKeyMaterial} className={copiedKey ? "text-green-400" : "text-gray-500 hover:text-gray-300"}>
+                    {copiedKey ? <CheckCircle2 className="h-4 w-4"/> : <X className="h-4 w-4 rotate-45"/>}
+                  </button>
+                </div>
+              </div>
+
+              <div className="rounded-lg bg-amber-950/30 border border-amber-800/40 px-3 py-2.5 text-xs text-amber-300/90">
+                Transfer this file only over an encrypted channel (PGP email, secrets manager,
+                internal vault). Delete local copies once the receiving team has imported it.
+              </div>
+
+              <div className="flex gap-2">
+                <Button onClick={downloadKeyMaterial} className="flex-1 bg-orange-700 hover:bg-orange-600 text-white text-sm">
+                  <Database className="h-4 w-4 mr-2"/>Download JSON
+                </Button>
+                <Button onClick={() => setRevealResult(null)} variant="outline" className="border-gray-700 text-gray-300 text-sm">
+                  Done — Saved It
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      )}
 
       {/* ── Root KEK Rotation — separate, highest-sensitivity card ───── */}
       <RootKEKRotationSection/>

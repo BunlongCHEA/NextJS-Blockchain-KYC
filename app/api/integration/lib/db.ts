@@ -58,7 +58,7 @@ function goBase(): string {
 let _cachedToken: string | null = null;
 let _tokenExpiresAt = 0;
 
-async function getServiceToken(): Promise<string> {
+export async function getServiceToken(): Promise<string> {
   if (_cachedToken && Date.now() < _tokenExpiresAt - 60_000) {
     return _cachedToken;
   }
@@ -100,7 +100,7 @@ async function getServiceToken(): Promise<string> {
 
 // ─── Shared fetch helper ──────────────────────────────────────────────────────
 
-async function goFetch(
+export async function goFetch(
   path: string,
   options: RequestInit = {},
 ): Promise<Response> {
