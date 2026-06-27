@@ -25,17 +25,21 @@ build:
     - docker:28.3.3-dind
   before_script:
     - echo $CI_REGISTRY_PASSWORD | docker login -u $CI_REGISTRY_USER --password-stdin $CI_REGISTRY
-    - docker buildx create --use
   script:
-    - echo "Building NextJS Docker image for arm64 (Raspberry Pi 5)..."
-    - |
-      docker buildx build \
-        --platform linux/arm64 \
-        -t $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA \
-        -t $CI_REGISTRY_IMAGE:latest \
-        --push \
-        .
-    - echo "✓ NextJS Docker image (arm64) pushed successfully"
+    - echo "Building NextJS Docker image..."
+    # - |
+    #   docker build \
+    #     --build-arg NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-https://kycapi.bunlong.uk} \
+    #     --build-arg NEXT_PUBLIC_PYTHON_API_URL=${NEXT_PUBLIC_PYTHON_API_URL:-https://kyc-python-api.bunlong.uk} \
+    #     --build-arg NEXTAUTH_URL=${NEXTAUTH_URL:-https://kyc.bunlong.uk} \
+    #     -t $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA \
+    #     -t $CI_REGISTRY_IMAGE:latest \
+    #     .
+    - docker build -t $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA -t $CI_REGISTRY_IMAGE:latest .
+    
+    - docker push $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA
+    - docker push $CI_REGISTRY_IMAGE:latest
+    - echo "✓ NextJS Docker image pushed successfully"
   only:
     - main
     - develop
@@ -115,11 +119,28 @@ scan:
 # ─── Deploy to K3s via ArgoCD ─────────────────────────────────────────────────
 deploy:
   stage: deploy
-  tags:
-    - pi5-1-arm64-ubuntu                         # this is the tag for job runner created
+  image: alpine/k8s:1.32.11
   before_script:
-    - echo "Using local k3s API on the Pi - no kubeconfig copy needed"
-    - export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+    - echo "Setting up kubectl for K3s cluster..."
+
+    - |
+      if [ -z "$KUBE_CONFIG_BASE64" ]; then
+        echo "ERROR: KUBE_CONFIG_BASE64 is not set!"
+        echo "Please add it to GitLab CI/CD Variables (Settings → CI/CD → Variables)"
+        exit 1
+      fi
+
+    - mkdir -p ~/.kube
+    - echo "$KUBE_CONFIG_BASE64" | base64 -d > ~/.kube/config
+    - chmod 600 ~/.kube/config
+
+    - |
+      if [ ! -s ~/.kube/config ]; then
+        echo "ERROR: Kubeconfig is empty after decoding!"
+        exit 1
+      fi
+
+    - echo "✓ Kubeconfig decoded successfully"
     - kubectl version --client
     - kubectl cluster-info
     - kubectl get nodes
@@ -127,22 +148,27 @@ deploy:
   script:
     - echo "Deploying NextJS frontend to Kubernetes..."
 
-    - kubectl create namespace $KUBE_NAMESPACE --dry-run=client -o yaml | kubectl apply -f -
+    # Create frontend namespace
+    - kubectl create namespace kyc-blockchain-frontend --dry-run=client -o yaml | kubectl apply -f -
 
+    # Create GitLab registry pull secret in frontend namespace
     - |
       kubectl create secret docker-registry gitlab-registry \
         --docker-server=$CI_REGISTRY \
         --docker-username=$CI_REGISTRY_USER \
         --docker-password=$CI_REGISTRY_PASSWORD \
         --docker-email=$GITLAB_USER_EMAIL \
-        -n $KUBE_NAMESPACE \
+        -n kyc-blockchain-frontend \
         --dry-run=client -o yaml | kubectl apply -f -
 
+    # Apply ArgoCD application manifest
     - echo "Applying frontend ArgoCD application..."
     - kubectl apply -f k8s/argocd/
 
+    # Wait for ArgoCD to register the application
     - sleep 5
 
+    # Trigger ArgoCD sync
     - |
       if kubectl get application kyc-blockchain-frontend -n argocd >/dev/null 2>&1; then
         echo "Syncing kyc-blockchain-frontend application..."
