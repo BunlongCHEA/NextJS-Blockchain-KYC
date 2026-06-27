@@ -25,7 +25,8 @@ build:
     - docker:28.3.3-dind
   before_script:
     - echo $CI_REGISTRY_PASSWORD | docker login -u $CI_REGISTRY_USER --password-stdin $CI_REGISTRY
-    - docker buildx create --use
+    - docker context create tls-environment
+    - docker buildx create tls-environment --use
   script:
     - echo "Building NextJS Docker image for arm64 (Raspberry Pi 5)..."
     - |
