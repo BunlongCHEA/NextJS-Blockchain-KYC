@@ -65,6 +65,7 @@ scan:
     # ── 1. Table report in CI log (blocking on CRITICAL) ──────────────────
     - |
       trivy image \
+        --platform linux/arm64 \
         --severity $TRIVY_SEVERITY \
         --exit-code $TRIVY_EXIT_CODE \
         --ignore-unfixed=$TRIVY_IGNORE_UNFIXED \
@@ -75,6 +76,7 @@ scan:
     # ── 2. Full JSON report (artifact — HIGH + CRITICAL, non-blocking) ────
     - |
       trivy image \
+        --platform linux/arm64 \
         --severity HIGH,CRITICAL \
         --exit-code 0 \
         --ignore-unfixed=$TRIVY_IGNORE_UNFIXED \
@@ -86,6 +88,7 @@ scan:
     # ── 3. GitLab Security Dashboard format ──────────────────────────────
     - |
       trivy image \
+        --platform linux/arm64 \
         --severity HIGH,CRITICAL \
         --exit-code 0 \
         --ignore-unfixed=$TRIVY_IGNORE_UNFIXED \
@@ -99,7 +102,7 @@ scan:
  
   artifacts:
     when: always      # save reports even when scan finds issues
-    expire_in: 30d
+    expire_in: 3d
     paths:
       - trivy-report.json
       - gl-container-scanning-report.json
