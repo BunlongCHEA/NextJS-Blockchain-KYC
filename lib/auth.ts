@@ -3,6 +3,12 @@ import Credentials from "next-auth/providers/credentials";
 import axios from "axios";
 
 export const { handlers, signIn, signOut, auth } = NextAuth({
+  // Required by Auth.js v5 when NOT running on Vercel — otherwise it rejects
+  // any Host header it doesn't already recognize (UntrustedHost error).
+  // Safe here because NEXTAUTH_URL is already pinned to the real public
+  // origin (https://kyc.bunlong.uk) via the ConfigMap, and TLS termination
+  // happens at the Gateway, so the Host header can be trusted.
+  trustHost: true,
   providers: [
     Credentials({
       credentials: {
@@ -10,7 +16,7 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
         password: { label: "Password", type: "password" },
       },
       async authorize(credentials) {
-        // ✅ Use API_URL (server-side only env var, no NEXT_PUBLIC_ prefix)
+        // Use API_URL (server-side only env var, no NEXT_PUBLIC_ prefix)
         const apiUrl = process.env.API_URL;
 
         console.log("[auth] authorize() called");
@@ -35,7 +41,7 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
             }
           );
 
-          // ✅ Log raw response shape to confirm what Go returns
+          // Log raw response shape to confirm what Go returns
           // console.log("[auth] Login response status:", response.status);
           // console.log("[auth] Login response data:", JSON.stringify(response.data));
           // console.log("API URL:", process.env.NEXT_PUBLIC_API_URL);
@@ -56,7 +62,7 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
           }
           return null;
         } catch (error: any) {
-          // ✅ Log the real error — visible in npm run dev terminal
+          // Log the real error — visible in npm run dev terminal
           console.error("[auth] Login failed:", error?.response?.payload ?? error?.message ?? error);
           return null;
         }
