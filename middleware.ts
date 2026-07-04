@@ -30,26 +30,30 @@ export default auth((req) => {
     !nextUrl.pathname.startsWith("/change-password") &&
     !nextUrl.pathname.startsWith("/login")
   ) {
-    return NextResponse.redirect(new URL("/change-password", req.url));
+    // 303 (not the 307 default) so any POST hitting this middleware gets
+    // downgraded to GET on redirect — /change-password is a page route with
+    // no POST handler, so a preserved-method 307 here causes a 405.
+    return NextResponse.redirect(new URL("/change-password", req.url), 303);
+    //// return NextResponse.redirect(new URL("/change-password", req.url));
   }
 
   // Admin routes protection
   if (isAdminRoute) {
     if (!isLoggedIn) {
-      return NextResponse.redirect(new URL("/login/admin", req.url));
+      return NextResponse.redirect(new URL("/login/admin", req.url), 303);
     }
     if (role === "customer") {
-      return NextResponse.redirect(new URL("/login/admin", req.url));
+      return NextResponse.redirect(new URL("/login/admin", req.url), 303);
     }
   }
 
   // Customer routes protection
   if (isCustomerRoute) {
     if (!isLoggedIn) {
-      return NextResponse.redirect(new URL("/login/customer", req.url));
+      return NextResponse.redirect(new URL("/login/customer", req.url), 303);
     }
     if (role !== "customer") {
-      return NextResponse.redirect(new URL("/login/customer", req.url));
+      return NextResponse.redirect(new URL("/login/customer", req.url), 303);
     }
   }
 
