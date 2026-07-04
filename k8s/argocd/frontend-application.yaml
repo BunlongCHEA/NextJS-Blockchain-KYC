@@ -17,8 +17,8 @@ spec:
     path: k8s/app
     directory:
       recurse: true
-      exclude: |
-        11-clusterissuer.yaml
+      # exclude: |
+      #   11-clusterissuer.yaml
 
   destination:
     server: https://kubernetes.default.svc
