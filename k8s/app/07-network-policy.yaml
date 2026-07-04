@@ -14,14 +14,14 @@ spec:
     - Egress
 
   ingress:
-    # Allow traffic from Traefik (kube-system namespace) on port 3000
-    - from:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: kube-system
-      ports:
-        - protocol: TCP
-          port: 3000
+    # # Allow traffic from Traefik (kube-system namespace) on port 3000
+    # - from:
+    #     - namespaceSelector:
+    #         matchLabels:
+    #           kubernetes.io/metadata.name: kube-system
+    #   ports:
+    #     - protocol: TCP
+    #       port: 3000
 
     # Allow traffic from anywhere on port 80 (HTTP)
     - from:
@@ -33,12 +33,12 @@ spec:
         - protocol: TCP
           port: 3000
 
-    # Allow traffic from same namespace (health checks, etc.)
-    - from:
-        - podSelector: {}
-      ports:
-        - protocol: TCP
-          port: 3000
+    # # Allow traffic from same namespace (health checks, etc.)
+    # - from:
+    #     - podSelector: {}
+    #   ports:
+    #     - protocol: TCP
+    #       port: 3000
 
     # Allow Prometheus scraping from monitoring namespace
     - from:
