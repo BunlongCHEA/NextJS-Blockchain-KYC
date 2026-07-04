@@ -91,7 +91,8 @@ export default function ChangePasswordForm() {
         }
       }, 1500);
 
-    } catch {
+    } catch (err) {
+      console.error("[change-password] fetch failed:", err);
       setError("An unexpected error occurred. Please try again.");
     } finally {
       setIsLoading(false);
