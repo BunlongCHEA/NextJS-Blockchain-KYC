@@ -3,6 +3,10 @@ variables:
   DOCKER_TLS_CERTDIR: "/certs"
   KUBE_NAMESPACE: "kyc-blockchain-frontend"
 
+  NEXT_PUBLIC_API_URL: "https://kycapi.bunlong.uk"
+  NEXT_PUBLIC_PYTHON_API_URL: "https://kyc-python-api.bunlong.uk"
+  NEXTAUTH_URL: "https://kyc.bunlong.uk"
+
   # Trivy settings
   # CRITICAL severity blocks the pipeline. HIGH is reported but non-blocking.
   # To also block on HIGH: set TRIVY_SEVERITY to "HIGH,CRITICAL"
@@ -32,10 +36,15 @@ build:
     - echo "Building NextJS Docker image for arm64 (Raspberry Pi 5)..."
     - |
       docker buildx build \
-        --platform linux/arm64 \
-        -t $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA \
-        -t $CI_REGISTRY_IMAGE:latest \
-        --push \
+      --platform linux/arm64 \
+      --build-arg NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL \
+      --build-arg NEXT_PUBLIC_PYTHON_API_URL=$NEXT_PUBLIC_PYTHON_API_URL \
+      --build-arg NEXTAUTH_URL=$NEXTAUTH_URL \
+      --cache-from type=registry,ref=$CI_REGISTRY_IMAGE:buildcache \
+      --cache-to type=registry,ref=$CI_REGISTRY_IMAGE:buildcache,mode=max \
+      -t $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA \
+      -t $CI_REGISTRY_IMAGE:latest \
+      --push \
         .
     - echo "✓ NextJS Docker image (arm64) pushed successfully"
   only:

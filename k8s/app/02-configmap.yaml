@@ -18,8 +18,8 @@ data:
   # ── Backend API URLs ───────────────────────────────────────────────────────
   # NEXT_PUBLIC_* are accessible in the browser (baked at build, overridden at SSR).
   # The SSR-side can also read NEXT_PUBLIC vars from the container environment.
-  NEXT_PUBLIC_API_URL: "https://kycapi.bunlong.uk"
-  NEXT_PUBLIC_PYTHON_API_URL: "https://kyc-python-api.bunlong.uk"
+  # NEXT_PUBLIC_API_URL: "https://kycapi.bunlong.uk"
+  # NEXT_PUBLIC_PYTHON_API_URL: "https://kyc-python-api.bunlong.uk"
 
   # ── Internal cluster URL for SSR API calls ─────────────────────────────────
   # NextJS server-side code (getServerSideProps, API routes, server actions)

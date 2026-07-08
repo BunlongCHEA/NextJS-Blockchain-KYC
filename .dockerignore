@@ -13,3 +13,4 @@ k8s/
 .DS_Store
 Dockerfile
 .dockerignore
+coverage

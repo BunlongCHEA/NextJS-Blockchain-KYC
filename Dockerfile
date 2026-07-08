@@ -12,7 +12,8 @@ WORKDIR /app
 # Copy package manifests first for layer-cache efficiency
 COPY package.json package-lock.json* ./
 
-RUN npm ci --legacy-peer-deps
+# RUN npm ci --legacy-peer-deps
+RUN --mount=type=cache,target=/root/.npm npm ci --legacy-peer-deps
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Stage 2 — builder
@@ -40,7 +41,8 @@ ENV NEXTAUTH_URL=$NEXTAUTH_URL
 # Disable Next.js telemetry during build
 ENV NEXT_TELEMETRY_DISABLED=1
 
-RUN npm run build
+# RUN npm run build
+RUN --mount=type=cache,target=/root/.npm npm run build
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Stage 3 — runner
