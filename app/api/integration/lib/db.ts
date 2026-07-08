@@ -64,9 +64,9 @@ export async function getServiceToken(): Promise<string> {
   }
 
   const staticToken = process.env.INTEGRATION_SERVICE_TOKEN;
-  if (staticToken && !staticToken.startsWith("eyJ")) {
+  if (staticToken) {
     _cachedToken    = staticToken;
-    _tokenExpiresAt = Date.now() + 24 * 3_600_000;
+    _tokenExpiresAt = Date.now() + 3_600_000; // 1h — assume it may expire
     return staticToken;
   }
 
@@ -105,7 +105,7 @@ export async function goFetch(
   options: RequestInit = {},
 ): Promise<Response> {
   const token = await getServiceToken();
-  return fetch(`${goBase()}${path}`, {
+  const res = await fetch(`${goBase()}${path}`, {
     ...options,
     headers: {
       "Content-Type":  "application/json",
@@ -113,6 +113,23 @@ export async function goFetch(
       ...(options.headers ?? {}),
     },
   });
+
+  // ✅ ADD: If 401, clear the cache and retry ONCE with a fresh token
+  if (res.status === 401) {
+    _cachedToken    = null;
+    _tokenExpiresAt = 0;
+    const freshToken = await getServiceToken();
+    return fetch(`${goBase()}${path}`, {
+      ...options,
+      headers: {
+        "Content-Type":  "application/json",
+        "Authorization": `Bearer ${freshToken}`,
+        ...(options.headers ?? {}),
+      },
+    });
+  }
+
+  return res;
 }
 
 // ─── runMigration ─────────────────────────────────────────────────────────────

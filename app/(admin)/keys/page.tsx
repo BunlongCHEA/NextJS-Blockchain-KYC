@@ -864,7 +864,7 @@ function NewIntegrationKeyDialog({
     try {
       const fullKey = genRawKey();
       const hash    = await sha256hex(fullKey);
-      const now     = Date.now();
+      const now     = Math.floor(Date.now() / 1000);   // seconds: use Unix seconds (Math.floor(Date.now() / 1000)) not ms
       const expDays = parseInt(form.expires_days) || 365;
 
       const entry: IntegrationKey = {
