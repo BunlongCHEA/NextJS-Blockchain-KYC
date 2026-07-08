@@ -878,7 +878,7 @@ function NewIntegrationKeyDialog({
         is_deleted:          false,
         scopes,
         created_at:          now,
-        expires_at:          expDays > 0 ? now + expDays * 86_400_000 : 0,
+        expires_at:          expDays > 0 ? now + expDays * 86_400 : 0,
         last_used_at:        0,
         request_count:       0,
         request_count_today: 0,
