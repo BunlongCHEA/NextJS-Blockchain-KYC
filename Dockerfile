@@ -30,13 +30,13 @@ COPY . .
 # NEXT_PUBLIC_* are baked into the JS bundle at build time.
 # Non-public vars (NEXTAUTH_SECRET, etc.) are resolved at runtime — pass them
 # as build-arg only if you need them during `next build` (normally not needed).
-ARG NEXT_PUBLIC_API_URL=https://kycapi.bunlong.uk
-ARG NEXT_PUBLIC_PYTHON_API_URL=https://kyc-python-api.bunlong.uk
-ARG NEXTAUTH_URL=https://kyc.bunlong.uk
+# ARG NEXT_PUBLIC_API_URL=https://kycapi.bunlong.uk
+# ARG NEXT_PUBLIC_PYTHON_API_URL=https://kyc-python-api.bunlong.uk
+# ARG NEXTAUTH_URL=https://kyc.bunlong.uk
  
-ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
-ENV NEXT_PUBLIC_PYTHON_API_URL=$NEXT_PUBLIC_PYTHON_API_URL
-ENV NEXTAUTH_URL=$NEXTAUTH_URL
+# ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
+# ENV NEXT_PUBLIC_PYTHON_API_URL=$NEXT_PUBLIC_PYTHON_API_URL
+# ENV NEXTAUTH_URL=$NEXTAUTH_URL
 
 # Disable Next.js telemetry during build
 ENV NEXT_TELEMETRY_DISABLED=1
