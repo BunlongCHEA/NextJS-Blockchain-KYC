@@ -274,6 +274,17 @@ function GenerateKeyDialog({ open, onClose, banks, onGenerated, onViewDetail, on
     URL.revokeObjectURL(url);
   };
 
+  const downloadPublicKey = () => {
+    if (!generatedResult) return;
+    const blob = new Blob([generatedResult.key.public_key_pem], { type: "text/plain" });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement("a");
+    a.href     = url;
+    a.download = `${form.key_name}_public.pem`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
   return (
     <Dialog open={open} onOpenChange={onClose}>
       <DialogContent className="bg-gray-900 border-gray-800 text-white max-w-lg max-h-[90vh] overflow-y-auto">
@@ -284,7 +295,7 @@ function GenerateKeyDialog({ open, onClose, banks, onGenerated, onViewDetail, on
           </DialogTitle>
           <DialogDescription className="text-gray-500 text-xs">
             Calls <code className="text-cyan-400">POST /api/v1/keys/generate</code> — creates an RSA/ECDSA key pair.
-            The private key is shown once only and saved to the server's Downloads folder.
+            The private key is shown once only — download both keys to your device now.
           </DialogDescription>
         </DialogHeader>
 
@@ -422,7 +433,7 @@ function GenerateKeyDialog({ open, onClose, banks, onGenerated, onViewDetail, on
                 { label: "Type / Size",  value: `${generatedResult.key.key_type} ${generatedResult.key.key_size}-bit` },
                 { label: "Fingerprint",  value: generatedResult.key.fingerprint,  mono: true },
                 { label: "Organization", value: generatedResult.key.organization },
-                { label: "Saved to",     value: generatedResult.private_key_path || "server Downloads folder", mono: true },
+                // { label: "Saved to",     value: generatedResult.private_key_path || "server Downloads folder", mono: true },
               ].map(({ label, value, mono }) => (
                 <div key={label} className="flex justify-between gap-3">
                   <span className="text-gray-500 shrink-0">{label}</span>
@@ -460,6 +471,49 @@ function GenerateKeyDialog({ open, onClose, banks, onGenerated, onViewDetail, on
             </div>
           </div>
 
+          {/* Public key PEM */}
+          <div>
+            <p className="text-xs text-gray-500 uppercase tracking-wider mb-1.5">Public Key (PEM)</p>
+            <div className="relative">
+              <pre className="bg-gray-950 rounded-lg border border-gray-800 p-3 font-mono text-xs text-cyan-400 overflow-auto max-h-28 whitespace-pre-wrap break-all">
+                {generatedResult.key.public_key_pem}
+              </pre>
+            </div>
+            <div className="flex gap-2 mt-1.5">
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => {
+                  navigator.clipboard.writeText(generatedResult.key.public_key_pem);
+                  toast({ title: "Public key copied" });
+                }}
+                className="flex-1 border-gray-700 text-gray-300 text-xs"
+              >
+                <Copy className="h-3.5 w-3.5 mr-1.5" />
+                Copy PEM
+              </Button>
+              <Button
+                size="sm"
+                onClick={downloadPublicKey}
+                className="flex-1 bg-cyan-700 hover:bg-cyan-600 text-white text-xs"
+              >
+                <Download className="h-3.5 w-3.5 mr-1.5" />
+                Download .pem
+              </Button>
+            </div>
+          </div>
+
+          {/* Download both convenience button */}
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => { downloadPrivateKey(); downloadPublicKey(); }}
+            className="w-full border-violet-800 text-violet-300 hover:bg-violet-900/20 text-xs"
+          >
+            <Download className="h-3.5 w-3.5 mr-1.5" />
+            Download Both Keys (.pem files)
+          </Button>
+
           <div className="flex gap-2 pt-1">
             <Button
               variant="outline"
@@ -482,7 +536,7 @@ function GenerateKeyDialog({ open, onClose, banks, onGenerated, onViewDetail, on
           </div>
 
           <Button onClick={onClose} className="w-full bg-gray-700 hover:bg-gray-600 text-white">
-            Done — I have saved my private key
+            Done — I have saved both keys
           </Button>
         </div>
       )}
