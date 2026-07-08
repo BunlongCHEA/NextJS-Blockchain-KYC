@@ -69,16 +69,16 @@ spec:
                 configMapKeyRef:
                   name: kyc-frontend-config
                   key: NEXTAUTH_URL
-            - name: NEXT_PUBLIC_API_URL
-              valueFrom:
-                configMapKeyRef:
-                  name: kyc-frontend-config
-                  key: NEXT_PUBLIC_API_URL
-            - name: NEXT_PUBLIC_PYTHON_API_URL
-              valueFrom:
-                configMapKeyRef:
-                  name: kyc-frontend-config
-                  key: NEXT_PUBLIC_PYTHON_API_URL
+            # - name: NEXT_PUBLIC_API_URL
+            #   valueFrom:
+            #     configMapKeyRef:
+            #       name: kyc-frontend-config
+            #       key: NEXT_PUBLIC_API_URL
+            # - name: NEXT_PUBLIC_PYTHON_API_URL
+            #   valueFrom:
+            #     configMapKeyRef:
+            #       name: kyc-frontend-config
+            #       key: NEXT_PUBLIC_PYTHON_API_URL
             - name: API_URL
               valueFrom:
                 configMapKeyRef:
