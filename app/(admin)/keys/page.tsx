@@ -864,7 +864,7 @@ function NewIntegrationKeyDialog({
     try {
       const fullKey = genRawKey();
       const hash    = await sha256hex(fullKey);
-      const now     = Math.floor(Date.now() / 1000);   // seconds: use Unix seconds (Math.floor(Date.now() / 1000)) not ms
+      const now     = Math.floor(Date.now() / 1000);  // seconds: use Unix seconds (Math.floor(Date.now() / 1000)) not ms
       const expDays = parseInt(form.expires_days) || 365;
 
       const entry: IntegrationKey = {
@@ -1006,7 +1006,7 @@ function NewIntegrationKeyDialog({
                 { label: "Prefix",      value: result.key.key_prefix + "…"                },
                 { label: "Permissions", value: `${result.key.scopes.length} granted`       },
                 { label: "Svc Account", value: svcPreview.username                        },
-                { label: "Expires",     value: result.key.expires_at > 0 ? format(new Date(result.key.expires_at), "MMM d, yyyy") : "Never" },
+                { label: "Expires",     value: result.key.expires_at > 0 ? format(new Date(result.key.expires_at * 1000), "MMM d, yyyy") : "Never" },
               ].map(({ label, value }) => (
                 <div key={label} className="flex justify-between">
                   <span className="text-gray-500">{label}</span>
@@ -1349,8 +1349,9 @@ export default function KeysPage() {
                   </TableRow>
                 ) : (
                   filtered.map((k) => {
-                    const isExpired  = k.expires_at > 0 && k.expires_at < Date.now();
-                    const daysLeft   = k.expires_at > 0 ? Math.floor((k.expires_at - Date.now()) / 86_400_000) : null;
+                    const nowSec     = Math.floor(Date.now() / 1000);
+                    const isExpired  = k.expires_at > 0 && k.expires_at < nowSec;
+                    const daysLeft   = k.expires_at > 0 ? Math.floor((k.expires_at - nowSec) / 86_400) : null;
                     const pfxVisible = visiblePfx.has(k.id);
                     const togglePfx  = () => setVisiblePfx((p) => {
                       const n = new Set(p); n.has(k.id) ? n.delete(k.id) : n.add(k.id); return n;
@@ -1426,7 +1427,7 @@ export default function KeysPage() {
                         <TableCell className="py-3.5">
                           <p className="text-xs text-gray-400">
                             {k.last_used_at > 0
-                              ? formatDistanceToNow(k.last_used_at, { addSuffix: true })
+                              ? formatDistanceToNow(k.last_used_at * 1000, { addSuffix: true })
                               : <span className="text-gray-600">Never</span>}
                           </p>
                         </TableCell>
@@ -1458,7 +1459,7 @@ export default function KeysPage() {
                           ) : (
                             <>
                               <p className={`text-sm ${isExpired ? "text-red-400" : daysLeft <= 30 ? "text-amber-400" : "text-gray-300"}`}>
-                                {format(new Date(k.expires_at), "MMM d, yyyy")}
+                                {format(new Date(k.expires_at * 1000), "MMM d, yyyy")}
                               </p>
                               <p className="text-xs text-gray-600 mt-0.5">
                                 {isExpired ? `${Math.abs(daysLeft)}d ago` : `in ${daysLeft}d`}

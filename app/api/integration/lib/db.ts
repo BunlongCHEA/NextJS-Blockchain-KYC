@@ -32,14 +32,26 @@ export interface IntegrationKey {
   is_active:           boolean;
   is_deleted:          boolean;
   scopes:              Scope[];
-  created_at:          number;   // Unix ms
-  expires_at:          number;   // Unix ms  (0 = never)
-  last_used_at:        number;   // Unix ms
+  created_at:          number;   // Unix SECONDS (Go stores seconds)
+  expires_at:          number;   // Unix SECONDS (0 = never)
+  last_used_at:        number;   // Unix SECONDS
   request_count:       number;
   request_count_today: number;
   scope_counts:        Partial<Record<Scope, number>>;
   scope_counts_today:  Partial<Record<Scope, number>>;
   _today_date?:        string;
+}
+
+// ─── Timestamp helper ─────────────────────────────────────────────────────────
+// Go stores all timestamps as Unix seconds. JS Date.now() returns ms.
+// Always use these helpers when building IntegrationKey objects in the UI.
+
+export function nowSec(): number {
+  return Math.floor(Date.now() / 1000);
+}
+
+export function daysToSec(days: number): number {
+  return days * 86_400;
 }
 
 // ─── Go backend URL ───────────────────────────────────────────────────────────
