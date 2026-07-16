@@ -21,6 +21,7 @@ import {
   findKeyByHash,
   incrementStats,
   type Scope,
+  nowSec
 } from "./db";   // ← only change: db.ts now calls Go instead of Postgres directly
 
 // ─── SHA-256 (server-side Web Crypto) ────────────────────────────────────────
@@ -309,7 +310,7 @@ export async function gatewayHandler(
   if (!key.is_active) {
     return NextResponse.json({ success: false, error: "API key is disabled" }, { status: 403 });
   }
-  if (key.expires_at > 0 && key.expires_at < Date.now()) {
+  if (key.expires_at > 0 && key.expires_at < nowSec()) {
     return NextResponse.json({ success: false, error: "API key has expired" }, { status: 403 });
   }
 
